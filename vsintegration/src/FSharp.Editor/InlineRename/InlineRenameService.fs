@@ -21,6 +21,7 @@ open FSharp.Compiler.Symbols
 open FSharp.Compiler.Text
 open FSharp.Compiler.Tokenization
 open Symbols
+open System.Diagnostics
 
 type internal InlineRenameReplacementInfo(newSolution: Solution, replacementTextValid: bool, documentIds: IEnumerable<DocumentId>) =
     inherit FSharpInlineRenameReplacementInfo()
@@ -36,6 +37,8 @@ type internal InlineRenameLocationSet(locations: FSharpInlineRenameLocation [], 
     override _.Locations = upcast locations.ToList()
         
     override _.GetReplacementsAsync(replacementText, cancellationToken) : Task<FSharpInlineRenameReplacementInfo> =
+        Trace.TraceInformation $"* * * * GetReplacementsAsync called ({locations.Length} locations)"
+
         let rec applyChanges (solution: Solution) (locationsByDocument: (Document * FSharpInlineRenameLocation list) list) =
             async {
                 match locationsByDocument with
@@ -102,15 +105,18 @@ type internal InlineRenameInfo
         else Nullable(TextSpan(location.TextSpan.Start + position, replacementText.Length))
         
     override _.FindRenameLocationsAsync(_, _, cancellationToken) =
-        async {
+        backgroundTask {
+            Trace.TraceInformation "[][][][][] START getSymbolUsesInSolution"
             let! symbolUsesByDocumentId = symbolUses cancellationToken
+            Trace.TraceInformation $"========== FINISHED getSymbolUsesInSolution IsCancellationRequested: {cancellationToken.IsCancellationRequested}"
+            Trace.TraceInformation "()()() START create locations"
             let! locations =
                 symbolUsesByDocumentId
-                |> Seq.map (fun (KeyValue(documentId, symbolUses)) ->
-                    async {
+                |> Seq.map (fun (KeyValue(documentId, symbolUses)) () ->
+                    backgroundTask {
                         let document = document.Project.Solution.GetDocument(documentId)
                         let! sourceText = document.GetTextAsync(cancellationToken) |> Async.AwaitTask
-                        return 
+                        return
                             [| for symbolUse in symbolUses do
                                     match RoslynHelpers.TryFSharpRangeToTextSpan(sourceText, symbolUse) with
                                     | Some span ->
@@ -118,11 +124,11 @@ type internal InlineRenameInfo
                                         yield FSharpInlineRenameLocation(document, textSpan) 
                                     | None -> () |]
                     })
-                |> Async.Parallel
-                |> Async.map Array.concat
-
+                |> RoslynHelpers.ParallelBackgroundTasks cancellationToken
+                |> taskMap Array.concat
+            Trace.TraceInformation "()()() DONE creating locations"
             return InlineRenameLocationSet(locations, document.Project.Solution, lexerSymbol.Kind, symbolUse.Symbol) :> FSharpInlineRenameLocationSet
-        } |> RoslynHelpers.StartAsyncAsTask(cancellationToken)
+        }
 
 [<Export(typeof<FSharpInlineRenameServiceImplementation>); Shared>]
 type internal InlineRenameService 
