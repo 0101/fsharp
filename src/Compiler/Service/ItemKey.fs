@@ -15,6 +15,7 @@ open FSharp.Compiler.Text
 open FSharp.Compiler.Text.Range
 open FSharp.Compiler.TypedTree
 open FSharp.Compiler.TypedTreeBasics
+open System.Text
 
 #nowarn "9"
 #nowarn "51"
@@ -169,15 +170,32 @@ and [<Sealed>] ItemKeyStoreBuilder() =
 
     let b = BlobBuilder()
 
-    let writeChar (c: char) = b.WriteUInt16(uint16 c)
+    let debug = StringBuilder()
 
-    let writeUInt16 (i: uint16) = b.WriteUInt16 i
+    let writeChar (c: char) = 
+        b.WriteUInt16(uint16 c)
+        debug.Append ' ' |> ignore
+        debug.Append c |> ignore
 
-    let writeInt32 (i: int) = b.WriteInt32 i
+    let writeUInt16 (i: uint16) = 
+        b.WriteUInt16 i
+        debug.Append ' ' |> ignore
+        debug.Append i |> ignore
 
-    let writeInt64 (i: int64) = b.WriteInt64 i
+    let writeInt32 (i: int) = 
+        b.WriteInt32 i
+        debug.Append ' ' |> ignore
+        debug.Append i |> ignore
 
-    let writeString (str: string) = b.WriteUTF16 str
+    let writeInt64 (i: int64) = 
+        b.WriteInt64 i
+        debug.Append ' ' |> ignore
+        debug.Append i |> ignore
+
+    let writeString (str: string) = 
+        b.WriteUTF16 str
+        debug.Append ' ' |> ignore
+        debug.Append str |> ignore
 
     let writeRange (m: range) =
         let mutable m = m
