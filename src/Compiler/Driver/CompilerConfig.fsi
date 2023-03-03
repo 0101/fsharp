@@ -4,6 +4,7 @@
 module internal FSharp.Compiler.CompilerConfig
 
 open System
+open System.Collections.Generic
 open FSharp.Compiler.IO
 open Internal.Utilities
 open Internal.Utilities.Library
@@ -68,7 +69,7 @@ type TimeStampCache =
 
     new: defaultTimeStamp: DateTime -> TimeStampCache
 
-    member GetFileTimeStamp: fileName: string -> DateTime
+    member GetFileTimeStamp: fileName: string * fileStampCache: IReadOnlyDictionary<string, DateTime> option -> DateTime
 
     member GetProjectReferenceTimeStamp: projectReference: IProjectReference -> DateTime
 

@@ -29,6 +29,8 @@ open FSharp.Compiler.BuildGraph
 
 #if !NO_TYPEPROVIDERS
 open FSharp.Core.CompilerServices
+open System.Collections.Generic
+
 #endif
 
 let (++) x s = x @ [ s ]
@@ -222,13 +224,19 @@ type TimeStampCache(defaultTimeStamp: DateTime) =
     let projects =
         ConcurrentDictionary<IProjectReference, DateTime>(HashIdentity.Reference)
 
-    member _.GetFileTimeStamp fileName =
+    member _.GetFileTimeStamp(fileName, fileStampCache: IReadOnlyDictionary<string, DateTime> option) =
         let ok, v = files.TryGetValue fileName
 
         if ok then
             v
         else
-            let v = FileSystem.GetLastWriteTimeShim fileName
+            let v =
+                match fileStampCache with
+                | Some cache ->
+                    let found, value = cache.TryGetValue fileName
+                    if found then value else FileSystem.GetLastWriteTimeShim fileName
+                | None ->
+                    FileSystem.GetLastWriteTimeShim fileName
             files[fileName] <- v
             v
 

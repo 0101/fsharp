@@ -733,9 +733,8 @@ type RawFSharpAssemblyDataBackedByLanguageService (tcConfig, tcGlobals, generate
 module IncrementalBuilderHelpers =
 
     /// Get the timestamp of the given file name.
-    let StampFileNameTask (cache: TimeStampCache) (_m: range, source: FSharpSource, _isLastCompiland) notifiedTime =
-        notifiedTime
-        |> Option.defaultWith (fun () -> cache.GetFileTimeStamp source.FilePath)
+    let StampFileNameTask (cache: TimeStampCache) (_m: range, source: FSharpSource, _isLastCompiland) fileStampCache =
+        cache.GetFileTimeStamp(source.FilePath, fileStampCache)
 
     /// Timestamps of referenced assemblies are taken from the file's timestamp.
     let StampReferencedAssemblyTask (cache: TimeStampCache) (_ref, timeStamper) =
@@ -970,7 +969,7 @@ type IncrementalBuilderInitialState =
         allDependencies: string []
         defaultTimeStamp: DateTime
         mutable isImportsInvalidated: bool
-        useChangeNotifications: bool
+        fileStampCache: IReadOnlyDictionary<string, DateTime> option
     }
 
     static member Create(
@@ -990,7 +989,7 @@ type IncrementalBuilderInitialState =
 #endif
                             allDependencies,
                             defaultTimeStamp: DateTime,
-                            useChangeNotifications: bool) =
+                            notificationCache: IReadOnlyDictionary<string, DateTime> option) =
 
         let initialState =
             {
@@ -1013,7 +1012,7 @@ type IncrementalBuilderInitialState =
                 allDependencies = allDependencies
                 defaultTimeStamp = defaultTimeStamp
                 isImportsInvalidated = false
-                useChangeNotifications = useChangeNotifications
+                fileStampCache = notificationCache
             }
 #if !NO_TYPEPROVIDERS
         importsInvalidatedByTypeProvider.Publish.Add(fun () -> initialState.isImportsInvalidated <- true)
@@ -1024,10 +1023,8 @@ type IncrementalBuilderInitialState =
 type IncrementalBuilderState =
     {
         // stampedFileNames represent the real stamps of the files.
-        // notifiedStampedFileNames represent the stamps of when we got notified about file changes
         // logicalStampedFileNames represent the stamps of the files that are used to calculate the project's logical timestamp.
         stampedFileNames: ImmutableArray<DateTime>
-        notifiedStampedFileNames: ImmutableArray<DateTime>
         logicalStampedFileNames: ImmutableArray<DateTime>
         stampedReferencedAssemblies: ImmutableArray<DateTime>
         initialBoundModel: GraphNode<BoundModel>
@@ -1073,8 +1070,7 @@ module IncrementalBuilderStateHelpers =
 
     and computeStampedFileName (initialState: IncrementalBuilderInitialState) (state: IncrementalBuilderState) (cache: TimeStampCache) slot fileInfo =
         let currentStamp = state.stampedFileNames[slot]
-        let notifiedStamp = if initialState.useChangeNotifications then Some state.notifiedStampedFileNames[slot] else None
-        let stamp = StampFileNameTask cache fileInfo notifiedStamp
+        let stamp = StampFileNameTask cache fileInfo initialState.fileStampCache
 
         if currentStamp <> stamp then
             match state.boundModels[slot].TryPeekValue() with
@@ -1083,7 +1079,7 @@ module IncrementalBuilderStateHelpers =
                 let newBoundModel = boundModel.ClearTcInfoExtras()
                 { state with
                     boundModels = state.boundModels.RemoveAt(slot).Insert(slot, GraphNode(node.Return newBoundModel))
-                    stampedFileNames = state.stampedFileNames.SetItem(slot, StampFileNameTask cache fileInfo notifiedStamp)
+                    stampedFileNames = state.stampedFileNames.SetItem(slot, StampFileNameTask cache fileInfo initialState.fileStampCache)
                 }
             | _ ->
 
@@ -1093,8 +1089,7 @@ module IncrementalBuilderStateHelpers =
 
                 // Invalidate the file and all files below it.
                 for j = 0 to stampedFileNames.Count - slot - 1 do
-                    let notifiedStamp = if initialState.useChangeNotifications then Some state.notifiedStampedFileNames.[slot + j] else None
-                    let stamp = StampFileNameTask cache initialState.fileNames[slot + j] notifiedStamp
+                    let stamp = StampFileNameTask cache initialState.fileNames[slot + j] initialState.fileStampCache
                     stampedFileNames[slot + j] <- stamp
                     logicalStampedFileNames[slot + j] <- stamp
                     boundModels[slot + j] <- createBoundModelGraphNode initialState state.initialBoundModel boundModels (slot + j)
@@ -1167,7 +1162,6 @@ type IncrementalBuilderState with
         let state =
             {
                 stampedFileNames = ImmutableArray.init fileNames.Length (fun _ -> DateTime.MinValue)
-                notifiedStampedFileNames = ImmutableArray.init fileNames.Length (fun _ -> DateTime.MinValue)
                 logicalStampedFileNames = ImmutableArray.init fileNames.Length (fun _ -> DateTime.MinValue)
                 stampedReferencedAssemblies = ImmutableArray.init referencedAssemblies.Length (fun _ -> DateTime.MinValue)
                 initialBoundModel = initialBoundModel
@@ -1428,15 +1422,6 @@ type IncrementalBuilder(initialState: IncrementalBuilderInitialState, state: Inc
         let syntaxTree = GetSyntaxTree initialState.tcConfig initialState.fileParsed initialState.lexResourceManager fileInfo
         syntaxTree.Parse None
 
-    member builder.NotifyFileChanged(fileName, timeStamp) =
-        node {
-            let slotOfFile = builder.GetSlotOfFileName fileName
-            let newState = { currentState with notifiedStampedFileNames = currentState.notifiedStampedFileNames.SetItem(slotOfFile, timeStamp) }
-            let cache = TimeStampCache defaultTimeStamp
-            let! ct = NodeCode.CancellationToken
-            setCurrentState newState cache ct
-        }
-
     member _.SourceFiles  = fileNames |> Seq.map (fun (_, f, _) -> f.FilePath) |> List.ofSeq
 
     /// CreateIncrementalBuilder (for background type checking). Note that fsc.fs also
@@ -1463,7 +1448,7 @@ type IncrementalBuilder(initialState: IncrementalBuilderInitialState, state: Inc
             parallelReferenceResolution,
             captureIdentifiersWhenParsing,
             getSource,
-            useChangeNotifications
+            notificationCache
         ) =
 
       let useSimpleResolutionSwitch = "--simpleresolution"
@@ -1600,7 +1585,7 @@ type IncrementalBuilder(initialState: IncrementalBuilderInitialState, state: Inc
 
                 [ for r in nonFrameworkResolutions do
                     let fileName = r.resolvedPath
-                    yield (Choice1Of2 fileName, (fun (cache: TimeStampCache) -> cache.GetFileTimeStamp fileName))
+                    yield (Choice1Of2 fileName, (fun (cache: TimeStampCache) -> cache.GetFileTimeStamp(fileName, None)))
 
                   for pr in projectReferences  do
                     yield Choice2Of2 pr, (fun (cache: TimeStampCache) -> cache.GetProjectReferenceTimeStamp pr) ]
@@ -1703,7 +1688,7 @@ type IncrementalBuilder(initialState: IncrementalBuilderInitialState, state: Inc
 #endif
                     allDependencies,
                     defaultTimeStamp,
-                    useChangeNotifications)
+                    notificationCache)
 
             let builder = IncrementalBuilder(initialState, IncrementalBuilderState.Create(initialState))
             return Some builder

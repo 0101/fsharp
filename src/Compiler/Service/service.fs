@@ -2,7 +2,9 @@
 
 namespace FSharp.Compiler.CodeAnalysis
 
+
 open System
+open System.Collections.Concurrent
 open System.Diagnostics
 open System.IO
 open System.Reflection
@@ -214,6 +216,8 @@ type BackgroundCompiler
 
     let frameworkTcImportsCache = FrameworkImportsCache(frameworkTcImportsCacheStrongSize)
 
+    let fileStampCache = ConcurrentDictionary<string, DateTime>()
+
     // We currently share one global dependency provider for all scripts for the FSharpChecker.
     // For projects, one is used per project.
     //
@@ -329,7 +333,7 @@ type BackgroundCompiler
                     parallelReferenceResolution,
                     captureIdentifiersWhenParsing,
                     getSource,
-                    useChangeNotifications
+                    if useChangeNotifications then Some fileStampCache else None
                 )
 
             match builderOpt with
@@ -484,7 +488,7 @@ type BackgroundCompiler
 
                 checkFileInProjectCache.Set(ltok, key, res)
                 res)
-
+    
     member _.ParseFile(fileName: string, sourceText: ISourceText, options: FSharpParsingOptions, cache: bool, userOpName: string) =
         async {
             use _ =
@@ -637,7 +641,7 @@ type BackgroundCompiler
 
         node {
             if useChangeNotifications then
-                do! builder.NotifyFileChanged(fileName, DateTime.UtcNow)
+                fileStampCache[fileName] <- DateTime.UtcNow
 
             match! bc.GetCachedCheckFileResult(builder, fileName, sourceText, options) with
             | Some (_, results) -> return FSharpCheckFileAnswer.Succeeded results
@@ -782,20 +786,25 @@ type BackgroundCompiler
 
     member _.NotifyFileChanged(fileName, options, userOpName) =
         node {
-            use _ =
-                Activity.start
-                    "BackgroundCompiler.NotifyFileChanged"
-                    [|
-                        Activity.Tags.project, options.ProjectFileName
-                        Activity.Tags.fileName, fileName
-                        Activity.Tags.userOpName, userOpName
-                    |]
+            if useChangeNotifications then
+                use _ =
+                    Activity.start
+                        "BackgroundCompiler.NotifyFileChanged"
+                        [|
+                            Activity.Tags.project, options.ProjectFileName
+                            Activity.Tags.fileName, fileName
+                            Activity.Tags.userOpName, userOpName
+                        |]
 
-            let! builderOpt, _ = getOrCreateBuilder (options, userOpName)
+                fileStampCache[fileName] <- DateTime.UtcNow
 
-            match builderOpt with
-            | None -> return ()
-            | Some builder -> do! builder.NotifyFileChanged(fileName, DateTime.UtcNow)
+            //let! builderOpt, _ = getOrCreateBuilder (options, userOpName)
+
+            //match builderOpt with
+            //| None ->
+            //    return ()
+            //| Some builder ->
+            //    do! builder.NotifyFileChanged(fileName, DateTime.UtcNow)
         }
 
     /// Fetch the check information from the background compiler (which checks w.r.t. the FileSystem API)
@@ -1227,7 +1236,8 @@ type BackgroundCompiler
 
             incrementalBuildersCache.Clear(AnyCallerThread)
             frameworkTcImportsCache.Clear()
-            scriptClosureCache.Clear AnyCallerThread)
+            scriptClosureCache.Clear AnyCallerThread
+            fileStampCache.Clear())
 
     member _.DownsizeCaches() =
         use _ = Activity.startNoTags "BackgroundCompiler.DownsizeCaches"
