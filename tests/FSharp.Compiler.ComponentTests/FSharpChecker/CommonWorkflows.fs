@@ -132,3 +132,17 @@ let ``Using getSource and notifications instead of filesystem`` () =
         checkFile middle expectSignatureChanged
         checkFile last expectSignatureChanged
     }
+
+[<Fact>]
+let ``Multi-project solution with notifications`` () =
+
+    let library = SyntheticProject.Create("library", sourceFile "Library" [])
+    let project = {
+        SyntheticProject.Create("project", sourceFile "Project" ["Library"])
+        with DependsOn = [library] }
+
+    ProjectWorkflowBuilder(project, useGetSource = true, useChangeNotifications = true) {
+        checkFile "Project" expectOk
+        updateFile "Library" updatePublicSurface
+        checkFile "Project" expectSignatureChanged
+    }

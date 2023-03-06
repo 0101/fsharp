@@ -113,9 +113,9 @@ type SyntheticProject =
         |> Option.defaultWith (fun () -> failwith $"File with ID '{fileId}' not found in any project.")
 
     member this.FindByPath path =
-        this.SourceFiles
-        |> List.tryFind (fun f -> this.ProjectDir ++ f.FileName = path)
-        |> Option.defaultWith (fun () -> failwith $"File {path} not found in project {this.Name}.")
+        this.GetAllFiles()
+        |> List.tryFind (fun (p, f) -> p.ProjectDir ++ f.FileName = path)
+        |> Option.defaultWith (fun () -> failwith $"File with path '{path}' not found in any project.")
 
     member this.ProjectFileName = this.ProjectDir ++ $"{this.Name}.fsproj"
 
@@ -446,9 +446,8 @@ type ProjectWorkflowBuilder
     let mutable latestProject = initialProject
 
     let getSource filePath =
-        filePath
-        |> latestProject.FindByPath
-        |> renderSourceFile latestProject
+        let project, file = latestProject.FindByPath filePath
+        renderSourceFile project file
         |> SourceText.ofString
         |> Some
 
