@@ -9,6 +9,11 @@ open Xunit
 open FSharp.Test.ProjectGeneration
 open FSharp.Compiler.Text
 open FSharp.Compiler.CodeAnalysis
+open System.Collections.Concurrent
+
+open OpenTelemetry
+open OpenTelemetry.Resources
+open OpenTelemetry.Trace
 
 module Activity =
     let listen (filter: string) =
@@ -47,6 +52,9 @@ let ``Use Transparent Compiler`` () =
 
     Activity.listenToAll ()
 
+    let mutable tracerProvider: OpenTelemetry.Trace.TracerProvider = Unchecked.defaultof<_>
+    
+
     let size = 20
 
     let project =
@@ -63,6 +71,14 @@ let ``Use Transparent Compiler`` () =
     let last = $"File%03d{size}"
 
     ProjectWorkflowBuilder(project, useTransparentCompiler = true) {
+        withChecker (fun _ -> 
+            tracerProvider <-
+                Sdk.CreateTracerProviderBuilder()
+                    .AddSource("fsc")
+                    .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(serviceName="Tests", serviceVersion = "2"))
+                    .AddJaegerExporter()
+                    .Build()
+        )
         updateFile first updatePublicSurface
         checkFile first expectSignatureChanged
         checkFile last expectSignatureChanged
@@ -72,7 +88,10 @@ let ``Use Transparent Compiler`` () =
         updateFile middle (addDependency "addedFile")
         checkFile middle expectSignatureChanged
         checkFile last expectSignatureChanged
-    }
+    } |> ignore
+
+    tracerProvider.ForceFlush() |> ignore
+
 
 [<Fact>]
 let ``Parallel processing`` () =
@@ -105,7 +124,10 @@ let ``Parallel processing with signatures`` () =
         sourceFile "D" ["A"] |> addSignatureFile,
         sourceFile "E" ["B"; "C"; "D"] |> addSignatureFile)
 
+    let cacheEvents = ConcurrentBag<_>()
+
     ProjectWorkflowBuilder(project, useTransparentCompiler = true) {
+        withChecker (fun checker -> checker.CacheEvent.Add cacheEvents.Add)
         checkFile "E" expectOk
         updateFile "A" updatePublicSurface
         checkFile "E" expectNoChanges
@@ -116,7 +138,6 @@ let ``Parallel processing with signatures`` () =
         regenerateSignature "E"
         checkFile "E" expectSignatureChanged
     }
-
 
 let makeTestProject () =
     SyntheticProject.Create(

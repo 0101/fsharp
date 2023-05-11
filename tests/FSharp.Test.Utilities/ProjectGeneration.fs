@@ -680,6 +680,14 @@ type ProjectWorkflowBuilder
                 return project
             })
 
+    [<CustomOperation "withChecker">]
+    member this.WithChecker(workflow: Async<WorkflowContext>, f) =
+        async {
+            let! ctx = workflow
+            f checker
+            return ctx
+        }
+
     /// Change contents of given file using `processFile` function.
     /// Does not save the file to disk.
     [<CustomOperation "updateFile">]
