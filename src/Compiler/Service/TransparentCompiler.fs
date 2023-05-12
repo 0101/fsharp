@@ -100,6 +100,7 @@ type internal TransparentCompiler
         AsyncMemoize(logEvent = fun (e, ((fileName, version), _, _)) -> cacheEvent.Trigger("ParseFile", e, [| fileName; version |] ))
     let ParseAndCheckFileInProjectCache = AsyncMemoize()
     let FrameworkImportsCache = AsyncMemoize()
+    let BootstrapInfoStaticCache = AsyncMemoize()
     let BootstrapInfoCache = AsyncMemoize()
     let TcPriorCache = AsyncMemoize()
     let TcIntermediateCache = AsyncMemoize()
@@ -277,8 +278,11 @@ type internal TransparentCompiler
             return tcImports, tcInfo
         }
 
-    let computeBootstrapInfoInner (projectSnapshot: FSharpProjectSnapshot) =
+    /// Bootstrap info that does not depend on contents of the files
+    let ComputeBootstrapInfoStatic (projectSnapshot: FSharpProjectSnapshot) _key =
         node {
+            use _ = Activity.start "ComputeBootstrapInfoStatic" [| Activity.Tags.project, projectSnapshot.ProjectFileName |> Path.GetFileName |]
+
             let useSimpleResolutionSwitch = "--simpleresolution"
             let commandLineArgs = projectSnapshot.OtherOptions
             let defaultFSharpBinariesDir = FSharpCheckerResultsSettings.defaultFSharpBinariesDir
@@ -459,9 +463,9 @@ type internal TransparentCompiler
 
             let tcConfigP = TcConfigProvider.Constant tcConfig
 
-#if !NO_TYPEPROVIDERS
+    #if !NO_TYPEPROVIDERS
             let importsInvalidatedByTypeProvider = Event<unit>()
-#endif
+    #endif
 
             // Check for the existence of loaded sources and prepend them to the sources list if present.
             let sourceFiles =
@@ -510,10 +514,18 @@ type internal TransparentCompiler
                     dependencyProvider,
                     loadClosureOpt,
                     basicDependencies
-#if !NO_TYPEPROVIDERS
+    #if !NO_TYPEPROVIDERS
                     ,importsInvalidatedByTypeProvider
-#endif
+    #endif
                 )
+            return sourceFiles, tcConfig, tcImports, tcGlobals, initialTcInfo, loadClosureOpt
+        }
+
+    let computeBootstrapInfoInner (projectSnapshot: FSharpProjectSnapshot) =
+        node {
+            let bootstrapStaticKey = projectSnapshot.WithoutFileVersions.Key
+
+            let! sourceFiles, tcConfig, tcImports, tcGlobals, initialTcInfo, loadClosureOpt = BootstrapInfoStaticCache.Get(bootstrapStaticKey, ComputeBootstrapInfoStatic projectSnapshot)
 
             let fileSnapshots = Map [ for f in projectSnapshot.SourceFiles -> f.FileName, f ]
 
