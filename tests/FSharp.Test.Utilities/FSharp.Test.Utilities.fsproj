@@ -78,6 +78,7 @@
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="$(MicrosoftCodeAnalysisCSharpVersion)" />
     <PackageReference Include="Microsoft.CodeAnalysis.Test.Resources.Proprietary" Version="$(MicrosoftCodeAnalysisTestResourcesProprietaryVersion)" />
     <PackageReference Include="Microsoft.NETCore.App.Ref" Version="6.0.0" IncludeAssets="none" PrivateAssets="all" GeneratePathProperty="true" />
+	<PackageReference Include="OpenTelemetry.Exporter.Jaeger" Version="1.4.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -106,12 +107,5 @@
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </EmbeddedResource>
   </ItemGroup>
-
-	<ItemGroup>
-		<PackageReference Include="OpenTelemetry.Exporter.InMemory" Version="1.4.0" />
-		<PackageReference Include="OpenTelemetry.Exporter.Jaeger" Version="1.4.0" />
-		<PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.4.0" />
-		<PackageReference Include="OpenTelemetry.Exporter.Zipkin" Version="1.4.0" />
-	</ItemGroup>
 
 </Project>
