@@ -66,7 +66,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Net.Compilers" Version="$(MicrosoftNetCompilersVersion)" />
-    <PackageReference Include="System.Collections.Immutable" Version="$(SystemCollectionsImmutableVersion)"  GeneratePathProperty="true" />
+    <PackageReference Include="System.Collections.Immutable" Version="$(SystemCollectionsImmutableVersion)" GeneratePathProperty="true" />
     <PackageReference Include="System.Memory" Version="$(SystemMemoryVersion)" />
     <PackageReference Include="System.Buffers" Version="$(SystemBuffersVersion)" />
     <PackageReference Include="Microsoft.DiaSymReader.PortablePdb" Version="$(MicrosoftDiaSymReaderPortablePdbVersion)">
@@ -108,10 +108,10 @@
   </ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="OpenTelemetry.Exporter.InMemory" Version="1.3.0" />
-		<PackageReference Include="OpenTelemetry.Exporter.Jaeger" Version="1.3.0" />
-		<PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.1.0" />
-		<PackageReference Include="OpenTelemetry.Exporter.Zipkin" Version="1.1.0" />
+		<PackageReference Include="OpenTelemetry.Exporter.InMemory" Version="1.4.0" />
+		<PackageReference Include="OpenTelemetry.Exporter.Jaeger" Version="1.4.0" />
+		<PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.4.0" />
+		<PackageReference Include="OpenTelemetry.Exporter.Zipkin" Version="1.4.0" />
 	</ItemGroup>
 
 </Project>
