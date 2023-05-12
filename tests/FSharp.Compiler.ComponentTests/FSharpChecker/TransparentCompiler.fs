@@ -1,19 +1,11 @@
 ﻿module FSharp.Compiler.ComponentTests.FSharpChecker.TransparentCompiler
 
-open System
-open System.IO
+open System.Collections.Concurrent
 open System.Diagnostics
 
 open Xunit
 
 open FSharp.Test.ProjectGeneration
-open FSharp.Compiler.Text
-open FSharp.Compiler.CodeAnalysis
-open System.Collections.Concurrent
-
-open OpenTelemetry
-open OpenTelemetry.Resources
-open OpenTelemetry.Trace
 
 module Activity =
     let listen (filter: string) =
@@ -46,14 +38,10 @@ module Activity =
 
     let listenToAll () = listen ""
 
-
 [<Fact>]
 let ``Use Transparent Compiler`` () =
 
     Activity.listenToAll ()
-
-    let mutable tracerProvider: OpenTelemetry.Trace.TracerProvider = Unchecked.defaultof<_>
-    
 
     let size = 20
 
@@ -71,14 +59,6 @@ let ``Use Transparent Compiler`` () =
     let last = $"File%03d{size}"
 
     ProjectWorkflowBuilder(project, useTransparentCompiler = true) {
-        withChecker (fun _ -> 
-            tracerProvider <-
-                Sdk.CreateTracerProviderBuilder()
-                    .AddSource("fsc")
-                    .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(serviceName="Tests", serviceVersion = "2"))
-                    .AddJaegerExporter()
-                    .Build()
-        )
         updateFile first updatePublicSurface
         checkFile first expectSignatureChanged
         checkFile last expectSignatureChanged
@@ -88,10 +68,7 @@ let ``Use Transparent Compiler`` () =
         updateFile middle (addDependency "addedFile")
         checkFile middle expectSignatureChanged
         checkFile last expectSignatureChanged
-    } |> ignore
-
-    tracerProvider.ForceFlush() |> ignore
-
+    }
 
 [<Fact>]
 let ``Parallel processing`` () =
@@ -110,7 +87,6 @@ let ``Parallel processing`` () =
         updateFile "A" updatePublicSurface
         checkFile "E" expectSignatureChanged
     }
-
 
 [<Fact>]
 let ``Parallel processing with signatures`` () =
