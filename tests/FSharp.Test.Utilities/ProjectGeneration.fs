@@ -670,11 +670,11 @@ type ProjectWorkflowBuilder
         tracerProvider <-
             Sdk.CreateTracerProviderBuilder()
                 .AddSource("fsc")
-                .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(serviceName="ProjectWorkflow", serviceVersion = "1"))
+                .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService(serviceName="F#", serviceVersion = "1"))
                 .AddJaegerExporter()
                 .Build()
             |> Some
-        activity <- Activity.start "ProjectWorkflow" [ Activity.Tags.project, ctx.Project.Name ] |> Some
+        activity <- Activity.start ctx.Project.Name [ Activity.Tags.project, ctx.Project.Name ] |> Some
         return ctx
     }
 
