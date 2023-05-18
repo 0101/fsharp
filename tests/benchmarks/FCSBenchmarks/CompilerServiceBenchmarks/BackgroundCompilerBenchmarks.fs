@@ -221,3 +221,77 @@ type NoFileSystemCheckerBenchmark() =
     [<GlobalCleanup>]
     member this.Cleanup() =
         benchmark.DeleteProjectDir()
+
+
+[<MemoryDiagnoser>]
+[<BenchmarkCategory(FSharpCategory)>]
+[<SimpleJob(warmupCount=1,targetCount=2)>]
+type TransparentCompilerBenchmark() =
+
+    let size = 30
+
+    let somethingToCompile = File.ReadAllText (__SOURCE_DIRECTORY__ ++ "SomethingToCompileSmaller.fs")
+
+    let project =
+        { SyntheticProject.Create() with
+            SourceFiles = [
+                sourceFile $"File%03d{0}" []
+                for i in 1..size do
+                    { sourceFile $"File%03d{i}" [$"File%03d{i-1}"] with ExtraSource = somethingToCompile }
+            ]
+        }
+
+    let mutable benchmark : ProjectWorkflowBuilder = Unchecked.defaultof<_>
+
+    member val UseGetSource = true with get,set
+
+    member val UseChangeNotifications = true with get,set
+
+    [<ParamsAllValues>]
+    member val EmptyCache = true with get,set
+
+    [<ParamsAllValues>]
+    member val UseTransparentCompiler = true with get,set
+
+
+    [<GlobalSetup>]
+    member this.Setup() =
+        benchmark <-
+            ProjectWorkflowBuilder(
+            project,
+            useGetSource = (this.UseGetSource && not this.UseTransparentCompiler),
+            useChangeNotifications = (this.UseChangeNotifications && not this.UseTransparentCompiler),
+            useTransparentCompiler = this.UseTransparentCompiler).CreateBenchmarkBuilder()
+
+    [<IterationSetup>]
+    member this.EditFirstFile_OnlyInternalChange() =
+        if this.EmptyCache then
+            benchmark.Checker.InvalidateAll()
+            benchmark.Checker.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
+
+    [<Benchmark>]
+    member this.ExampleWorkflow() =
+
+        use _ = Activity.start "Benchmark" [
+            "UseTransparentCompiler", this.UseTransparentCompiler.ToString()
+        ]
+
+        let first = "File001"
+        let middle = $"File%03d{size / 2}"
+        let last = $"File%03d{size}"
+
+        benchmark {
+            updateFile first updatePublicSurface
+            checkFile first expectSignatureChanged
+            checkFile last expectSignatureChanged
+            updateFile middle updatePublicSurface
+            checkFile last expectSignatureChanged
+            addFileAbove middle (sourceFile "addedFile" [first])
+            updateFile middle (addDependency "addedFile")
+            checkFile middle expectSignatureChanged
+            checkFile last expectSignatureChanged
+        }
+
+    [<GlobalCleanup>]
+    member this.Cleanup() =
+        benchmark.DeleteProjectDir()

@@ -662,8 +662,8 @@ type ProjectWorkflowBuilder
             ctx.Project,
             ctx,
             useGetSource = useGetSource,
-            useChangeNotifications = useChangeNotifications
-        )
+            useChangeNotifications = useChangeNotifications,
+            useTransparentCompiler = useTransparentCompiler)
 
     member this.Checker = checker
 
@@ -679,7 +679,7 @@ type ProjectWorkflowBuilder
                 .AddJaegerExporter()
                 .Build()
             |> Some
-        activity <- Activity.start ctx.Project.Name [ Activity.Tags.project, ctx.Project.Name ] |> Some
+        activity <- Activity.start ctx.Project.Name [ Activity.Tags.project, ctx.Project.Name; "UsingTransparentCompiler", useTransparentCompiler.ToString() ] |> Some
         return ctx
     }
 
