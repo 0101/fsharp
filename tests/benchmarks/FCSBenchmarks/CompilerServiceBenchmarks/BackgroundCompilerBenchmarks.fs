@@ -226,7 +226,7 @@ type NoFileSystemCheckerBenchmark() =
 
 
 type TestProjectType =
-    | SingleDependencyChain = 1
+    | DependencyChain = 1
     | DependentGroups = 2
     | ParallelGroups = 3
 
@@ -234,8 +234,7 @@ type TestProjectType =
 [<MemoryDiagnoser>]
 [<ThreadingDiagnoser>]
 [<BenchmarkCategory(FSharpCategory)>]
-//[<SimpleJob(warmupCount=1,targetCount=2)>]
-[<SimpleJob(RunStrategy.ColdStart, targetCount=1)>]
+[<SimpleJob(warmupCount=1,targetCount=4)>]
 type TransparentCompilerBenchmark() =
 
     let size = 30
@@ -246,7 +245,7 @@ type TransparentCompilerBenchmark() =
 
     let projects = Map [
 
-        TestProjectType.SingleDependencyChain,
+        TestProjectType.DependencyChain,
             SyntheticProject.Create("SingleDependencyChain", [|
                 sourceFile $"File%03d{0}" []
                 for i in 1..size do
@@ -282,12 +281,12 @@ type TransparentCompilerBenchmark() =
     member val UseChangeNotifications = true with get,set
 
     //[<ParamsAllValues>]
-    member val EmptyCache = true with get,set
+    member val EmptyCache = false with get,set
 
     [<ParamsAllValues>]
     member val UseTransparentCompiler = true with get,set
 
-    //[<ParamsAllValues>]
+    [<ParamsAllValues>]
     member val ProjectType = TestProjectType.ParallelGroups with get,set
 
     member this.Project = projects[this.ProjectType]
@@ -297,8 +296,8 @@ type TransparentCompilerBenchmark() =
         benchmark <-
             ProjectWorkflowBuilder(
             this.Project,
-            useGetSource = (this.UseGetSource && not this.UseTransparentCompiler),
-            useChangeNotifications = (this.UseChangeNotifications && not this.UseTransparentCompiler),
+            useGetSource = this.UseGetSource,
+            useChangeNotifications = this.UseChangeNotifications,
             useTransparentCompiler = this.UseTransparentCompiler,
             runTimeout = 15_000).CreateBenchmarkBuilder()
 
