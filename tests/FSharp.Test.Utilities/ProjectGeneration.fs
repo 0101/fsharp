@@ -620,9 +620,9 @@ type ProjectWorkflowBuilder
         ?runTimeout
     ) =
 
-    let useGetSource = defaultArg useGetSource false
-    let useChangeNotifications = defaultArg useChangeNotifications false
     let useTransparentCompiler = defaultArg useTransparentCompiler false
+    let useGetSource = not useTransparentCompiler && defaultArg useGetSource false
+    let useChangeNotifications = not useTransparentCompiler && defaultArg useChangeNotifications false
 
     let mutable latestProject = initialProject
     let mutable activity = None
