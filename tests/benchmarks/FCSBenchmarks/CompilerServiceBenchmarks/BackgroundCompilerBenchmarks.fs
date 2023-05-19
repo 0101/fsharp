@@ -6,6 +6,7 @@ open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Text
 open FSharp.Compiler.Diagnostics
 open FSharp.Test.ProjectGeneration
+open BenchmarkDotNet.Engines
 
 
 [<Literal>]
@@ -223,23 +224,56 @@ type NoFileSystemCheckerBenchmark() =
         benchmark.DeleteProjectDir()
 
 
+
+type TestProjectType =
+    | SingleDependencyChain = 1
+    | DependentGroups = 2
+    | ParallelGroups = 3
+
+
 [<MemoryDiagnoser>]
+[<ThreadingDiagnoser>]
 [<BenchmarkCategory(FSharpCategory)>]
-[<SimpleJob(warmupCount=1,targetCount=2)>]
+//[<SimpleJob(warmupCount=1,targetCount=2)>]
+[<SimpleJob(RunStrategy.ColdStart, targetCount=1)>]
 type TransparentCompilerBenchmark() =
 
     let size = 30
 
+    let groups = 6
+    let filesPerGroup = size / groups
     let somethingToCompile = File.ReadAllText (__SOURCE_DIRECTORY__ ++ "SomethingToCompileSmaller.fs")
 
-    let project =
-        { SyntheticProject.Create() with
-            SourceFiles = [
+    let projects = Map [
+
+        TestProjectType.SingleDependencyChain,
+            SyntheticProject.Create("SingleDependencyChain", [|
                 sourceFile $"File%03d{0}" []
                 for i in 1..size do
                     { sourceFile $"File%03d{i}" [$"File%03d{i-1}"] with ExtraSource = somethingToCompile }
-            ]
-        }
+            |])
+
+        TestProjectType.DependentGroups,
+            SyntheticProject.Create("GroupDependenciesProject", [|
+                for group in 1..groups do
+                    for i in 1..filesPerGroup do
+                        { sourceFile $"G{group}_F%03d{i}" [
+                            if group > 1 then $"G1_F%03d{1}"
+                            if i > 1 then $"G{group}_F%03d{i - 1}" ]
+                            with ExtraSource = somethingToCompile }
+            |])
+
+        TestProjectType.ParallelGroups,
+            SyntheticProject.Create("ParallelGroupsProject", [|
+                for group in 1..groups do
+                    for i in 1..filesPerGroup do
+                        { sourceFile $"G{group}_F%03d{i}" [
+                            if group > 1 then
+                                for i in 1..filesPerGroup do
+                                    $"G{group-1}_F%03d{i}" ]
+                            with ExtraSource = somethingToCompile }
+            |])
+    ]
 
     let mutable benchmark : ProjectWorkflowBuilder = Unchecked.defaultof<_>
 
@@ -247,21 +281,26 @@ type TransparentCompilerBenchmark() =
 
     member val UseChangeNotifications = true with get,set
 
-    [<ParamsAllValues>]
+    //[<ParamsAllValues>]
     member val EmptyCache = true with get,set
 
     [<ParamsAllValues>]
     member val UseTransparentCompiler = true with get,set
 
+    //[<ParamsAllValues>]
+    member val ProjectType = TestProjectType.ParallelGroups with get,set
+
+    member this.Project = projects[this.ProjectType]
 
     [<GlobalSetup>]
     member this.Setup() =
         benchmark <-
             ProjectWorkflowBuilder(
-            project,
+            this.Project,
             useGetSource = (this.UseGetSource && not this.UseTransparentCompiler),
             useChangeNotifications = (this.UseChangeNotifications && not this.UseTransparentCompiler),
-            useTransparentCompiler = this.UseTransparentCompiler).CreateBenchmarkBuilder()
+            useTransparentCompiler = this.UseTransparentCompiler,
+            runTimeout = 15_000).CreateBenchmarkBuilder()
 
     [<IterationSetup>]
     member this.EditFirstFile_OnlyInternalChange() =
@@ -276,20 +315,20 @@ type TransparentCompilerBenchmark() =
             "UseTransparentCompiler", this.UseTransparentCompiler.ToString()
         ]
 
-        let first = "File001"
-        let middle = $"File%03d{size / 2}"
-        let last = $"File%03d{size}"
+        let first = this.Project.SourceFiles[0].Id
+        let middle = this.Project.SourceFiles[size / 2].Id
+        let last = this.Project.SourceFiles |> List.last |> fun f -> f.Id
 
         benchmark {
             updateFile first updatePublicSurface
             checkFile first expectSignatureChanged
             checkFile last expectSignatureChanged
             updateFile middle updatePublicSurface
-            checkFile last expectSignatureChanged
+            checkFile last expectOk
             addFileAbove middle (sourceFile "addedFile" [first])
             updateFile middle (addDependency "addedFile")
             checkFile middle expectSignatureChanged
-            checkFile last expectSignatureChanged
+            checkFile last expectOk
         }
 
     [<GlobalCleanup>]
