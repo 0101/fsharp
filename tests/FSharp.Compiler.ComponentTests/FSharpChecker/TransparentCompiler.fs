@@ -358,12 +358,15 @@ let ``Multi-project`` signatureFiles =
 
 
 type ProjectAction = Get | Modify of (SyntheticProject -> SyntheticProject)
-type ProjectModificaiton = Update of int | Add | Remove
+type ProjectModificaiton = UpdatePublic of int | UpdatePrivate | Add | Remove
 type ProjectRequest = ProjectAction * AsyncReplyChannel<SyntheticProject>
 
-//[<Theory>]
-//[<InlineData true>]
-//[<InlineData false>]
+[<RequireQualifiedAccess>]
+type SignatureFiles = Yes | No | Some
+
+[<Theory>]
+[<InlineData true>]
+[<InlineData false>]
 let Fuzzing signatureFiles =
     let seed = System.Random().Next()
     let rng = System.Random(int seed)
@@ -391,12 +394,13 @@ let Fuzzing signatureFiles =
     let initialProject = SyntheticProject.Create(files)
 
     let builder = ProjectWorkflowBuilder(initialProject, useTransparentCompiler = true, autoStart = false)
+    let checker = builder.Checker
 
-    let projectAgent = MailboxProcessor.Start(fun (inbox: MailboxProcessor<ProjectRequest>) -> 
-        let rec loop project = 
+    let projectAgent = MailboxProcessor.Start(fun (inbox: MailboxProcessor<ProjectRequest>) ->
+        let rec loop project =
             async {
                 let! action, reply = inbox.Receive()
-                let project = 
+                let project =
                     match action with
                     | Modify f -> f project
                     | Get -> project
@@ -405,16 +409,17 @@ let Fuzzing signatureFiles =
             }
         loop initialProject )
 
-    let getProject () = 
+    let getProject () =
         projectAgent.PostAndAsyncReply(pair Get)
-        
-    let modifyProject f = 
+
+    let modifyProject f =
         projectAgent.PostAndAsyncReply(pair(Modify f)) |> Async.Ignore
 
     let modificationProbabilities = [
-        Update 1, 80
-        Update 2, 5
-        Update 10, 5
+        UpdatePrivate, 40
+        UpdatePublic 1, 40
+        UpdatePublic 2, 5
+        UpdatePublic 10, 5
         Add, 2
         Remove, 1
     ]
@@ -428,32 +433,30 @@ let Fuzzing signatureFiles =
     let getRandomModification () = modificationPicker[rng.Next(0, modificationPicker.Length)]
 
     let getRandomFile (project: SyntheticProject) = project.SourceFiles[rng.Next(0, project.SourceFiles.Length)].Id
-    
+
     let rec modifierThread = async {
         while true do
             do! Async.Sleep (rng.Next maxModificationDelayMs)
-            let modify project = 
+            let modify project =
                 match getRandomModification() with
-                | Update n ->
+                | UpdatePublic n ->
                     let files = Set [ for _ in 1..n -> getRandomFile project ]
-                    (project, files) 
+                    (project, files)
                     ||> Seq.fold (fun p f -> p |> updateFileInAnyProject f updatePublicSurface)
-                | Add 
+                | UpdatePrivate
+                | Add
                 | Remove ->
                     // TODO:
                     project
             do! modifyProject modify
     }
 
-    let rec fuzzer n actx = async {
-        if n >= operationCount then
-            return! actx
-        else
+    let rec checkingThread = async {
             let! ctx = actx
             let project = ctx.Project
-            return! fuzzer (n + 1) <|
+            return! checkingThread (n + 1) <|
                 match getRandomOperation () with
-                | Update ->
+                | UpdatePublic ->
                     let file = getRandomFile project
                     builder.UpdateFile(actx, file, updatePublicSurface)
                 | Check ->
