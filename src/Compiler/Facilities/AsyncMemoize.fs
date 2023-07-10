@@ -3,8 +3,32 @@ namespace Internal.Utilities.Collections
 open System
 open System.Collections.Generic
 open System.Threading
+open System.Diagnostics.Tracing
 
 open FSharp.Compiler.BuildGraph
+
+
+[<EventSource(Name = "FSharpCompilerService.AsyncCache")>]
+type AsyncMemoizeEventSource(name) = 
+    
+    inherit EventSource()
+
+    let mutable _requestCounter = None
+
+    member _.ReportSize value =
+        _requestCounter |> Option.iter (fun (ec: EventCounter) -> ec.WriteMetric(float32 value) )
+
+    override this.OnEventCommand(args: EventCommandEventArgs) =
+        //if args.Command = EventCommand.Enable && _requestCounter = None then
+        ignore args
+        if _requestCounter = None then
+            let ec = EventCounter($"Cache-size|%s{name}", this)
+            _requestCounter <- Some ec
+        
+    override _.Dispose(disposing) =
+        _requestCounter <- None
+        base.Dispose(disposing)
+    
 
 type internal Action<'TKey, 'TValue> =
     | GetOrCompute of NodeCode<'TValue> * CancellationToken
@@ -27,10 +51,12 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?logEvent: (stri
     let name = defaultArg name "N/A"
     let tok = obj ()
 
+    let es = new AsyncMemoizeEventSource(name)
+
     let cache =
         MruCache<_, 'TKey, Job<'TValue>>(
-            keepStrongly = 30,
-            keepMax = 200,
+            keepStrongly = 200,
+            keepMax = 400,
             areSame = (fun (x, y) -> x = y),
             requiredToKeep =
                 function
@@ -62,6 +88,8 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?logEvent: (stri
                 while true do
                     try
                         let _name = name
+
+                        es.ReportSize (cache.GetSize())
 
                         let! key, action, replyChannel = inbox.Receive()
 
