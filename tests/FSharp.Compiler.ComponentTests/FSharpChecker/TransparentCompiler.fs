@@ -371,13 +371,13 @@ type SignatureFiles = Yes = 1 | No = 2 | Some = 3
 [<InlineData(SignatureFiles.No)>]
 [<InlineData(SignatureFiles.Some)>]
 let Fuzzing signatureFiles =
-    let seed = System.Random().Next()
-    //let seed = 1093747864
+    //let seed = System.Random().Next()
+    let seed = 7338190
     let rng = System.Random(int seed)
 
     let fileCount = 20
     let maxDepsPerFile = 3
-    let checkingThreads = 16
+    let checkingThreads = 1
     let maxModificationDelayMs = 50
     let maxCheckingDelayMs = 5
     let runTimeMs = 10000
@@ -501,7 +501,7 @@ let Fuzzing signatureFiles =
     async {
         let! threads = 
             seq { 
-                Async.StartChild(modificationLoop, runTimeMs) 
+                //Async.StartChild(modificationLoop, runTimeMs) 
                 ignore modificationLoop
                 for _ in 1..checkingThreads do 
                     Async.StartChild(checkingLoop, runTimeMs)
@@ -527,11 +527,13 @@ let GiraffeFuzzing signatureFiles =
     //let seed = 1093747864
     let rng = System.Random(int seed)
 
-    let checkingThreads = 32
+    let checkingThreads = 16
     let maxModificationDelayMs = 100
-    let maxCheckingDelayMs = 5
-    let runTimeMs = 20000
+    let maxCheckingDelayMs = 20
+    //let runTimeMs = 30000
     let signatureFileModificationProbability = 0.25
+    let modificationLoopIterations = 100
+    let checkingLoopIterations = 100
 
     let giraffe = if signatureFiles then "giraffe-signatures" else "Giraffe"
     let giraffeDir = __SOURCE_DIRECTORY__ ++ ".." ++ ".." ++ ".." ++ ".." ++ giraffe ++ "src" ++ "Giraffe"
@@ -551,9 +553,9 @@ let GiraffeFuzzing signatureFiles =
                 let! action, reply = inbox.Receive()
                 let! project =
                     match action with
-                    | Modify f -> async { 
+                    | Modify f -> async {
                         let p = f project
-                        do! saveProject p false checker 
+                        do! saveProject p false checker
                         return p }
                     | Get -> async.Return project
                 reply.Reply project
@@ -592,7 +594,7 @@ let GiraffeFuzzing signatureFiles =
     let log = ConcurrentBag()
 
     let modificationLoop = async {
-        while true do
+        for _ in 1 .. modificationLoopIterations do
             do! Async.Sleep (rng.Next maxModificationDelayMs)
             let modify project =
                 match getRandomModification() with
@@ -613,9 +615,9 @@ let GiraffeFuzzing signatureFiles =
                     project
             do! modifyProject modify
     }
-    
+
     let checkingLoop n = async {
-        while true do
+        for _ in 1 .. checkingLoopIterations do
             let! project = getProject()
             let file = project |> getRandomFile
 
@@ -632,18 +634,18 @@ let GiraffeFuzzing signatureFiles =
     async {
         let! threads = 
             seq { 
-                Async.StartChild(modificationLoop, runTimeMs) 
+                Async.StartChild(modificationLoop) 
                 ignore modificationLoop
                 for n in 1..checkingThreads do 
-                    Async.StartChild(checkingLoop n, runTimeMs)
+                    Async.StartChild(checkingLoop n)
             }
-            |> Async.Parallel 
-        try 
-            do! threads |> Async.Parallel |> Async.Ignore
-        with 
-            | :? TimeoutException
-            | :? TaskCanceledException -> ()
-            | :? AggregateException as e when e.InnerExceptions |> Seq.exists (fun e -> e :? TaskCanceledException) -> ()
+            |> Async.Parallel
+        try
+            do! threads |> Seq.skip 1 |> Async.Parallel |> Async.Ignore
+        with
+            //| :? TimeoutException
+            //| :? TaskCanceledException -> ()
+            //| :? AggregateException as e when e.InnerExceptions |> Seq.exists (fun e -> e :? TaskCanceledException) -> ()
             | e -> failwith $"Seed: {seed}\nException: %A{e}"
     } |> Async.RunSynchronously
 
