@@ -27,6 +27,12 @@ module internal Graph =
         |> Array.map (fun (KeyValue (k, v)) -> k, v)
         |> readOnlyDict
 
+    let remove (f: 'Node -> bool) (graph: Graph<'Node>) : Graph<'Node> =
+        graph
+        |> Seq.filter (fun (KeyValue (node, _)) -> not (f node))
+        |> Seq.map (fun (KeyValue (node, deps)) -> node, deps |> Array.filter (not << f))
+        |> make
+
     let nodes (graph: Graph<'Node>) : Set<'Node> =
         graph.Values |> Seq.collect id |> Seq.append graph.Keys |> Set
 

@@ -913,10 +913,12 @@ type internal TransparentCompiler
         (prevTcInfo: TcInfo)
         =
 
-        let dependencyFiles = dependencyGraph |> Graph.subGraphFor fileIndex |> Graph.nodes
+        //let dependencyFiles = dependencyGraph |> Graph.subGraphFor fileIndex |> Graph.nodes
+        ignore dependencyGraph
 
         TcIntermediateCache.Get(
-            projectSnapshot.OnlyWith(dependencyFiles).Key,
+            //projectSnapshot.OnlyWith(dependencyFiles).Key,
+            projectSnapshot.UpTo(fileIndex).Key,
             node {
                 let input = parsedInput
                 let fileName = input.FileName
@@ -1222,15 +1224,15 @@ type internal TransparentCompiler
                 let! parsedInputs = files |> Seq.map (ComputeParseFile bootstrapInfo) |> NodeCode.Parallel
 
                 let! graph, dependencyFiles =
-                    //ComputeDependencyGraphForFile priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
-                    ComputeDependencyGraphForProject priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
+                    ComputeDependencyGraphForFile priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
+                    //ComputeDependencyGraphForProject priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
 
                 let! _results, tcInfo =
                     processTypeCheckingGraph
                         graph
                         (processGraphNode projectSnapshot bootstrapInfo parsedInputs dependencyFiles)
                         bootstrapInfo.InitialTcInfo
-
+                
                 return tcInfo, dependencyFiles
             }
         )
@@ -1368,7 +1370,7 @@ type internal TransparentCompiler
             node {
                 use _ =
                     Activity.start
-                        "ComputeParseAndCheckFullProject"
+                        "ComputeParseAndCheckAllFilesInProject"
                         [| Activity.Tags.project, projectSnapshot.ProjectFileName |> Path.GetFileName |]
 
                 let! parsedInputs =

@@ -56,7 +56,7 @@ let ``Parallel processing`` () =
         sourceFile "D" ["A"],
         sourceFile "E" ["B"; "C"; "D"])
 
-    ProjectWorkflowBuilder(project, useTransparentCompiler = false) {
+    ProjectWorkflowBuilder(project, useTransparentCompiler = true) {
         checkFile "E" expectOk
         updateFile "A" updatePublicSurface
         saveFile "A"
@@ -371,13 +371,13 @@ type SignatureFiles = Yes = 1 | No = 2 | Some = 3
 [<InlineData(SignatureFiles.No)>]
 [<InlineData(SignatureFiles.Some)>]
 let Fuzzing signatureFiles =
-    //let seed = System.Random().Next()
-    let seed = 7338190
+    let seed = System.Random().Next()
+    //let seed = 1093747864
     let rng = System.Random(int seed)
 
-    let fileCount = 20
+    let fileCount = 30
     let maxDepsPerFile = 3
-    let checkingThreads = 1
+    let checkingThreads = 20
     let maxModificationDelayMs = 50
     let maxCheckingDelayMs = 5
     let runTimeMs = 10000
@@ -524,12 +524,14 @@ let Fuzzing signatureFiles =
 [<InlineData false>]
 let GiraffeFuzzing signatureFiles =
     let seed = System.Random().Next()
-    //let seed = 1093747864
+    //let seed = 1514219769
     let rng = System.Random(int seed)
 
+    let getRandomItem (xs: 'x array) = xs[rng.Next(0, xs.Length)]
+
     let checkingThreads = 16
-    let maxModificationDelayMs = 100
-    let maxCheckingDelayMs = 20
+    let maxModificationDelayMs = 20
+    let maxCheckingDelayMs = 40
     //let runTimeMs = 30000
     let signatureFileModificationProbability = 0.25
     let modificationLoopIterations = 100
@@ -537,15 +539,25 @@ let GiraffeFuzzing signatureFiles =
 
     let giraffe = if signatureFiles then "giraffe-signatures" else "Giraffe"
     let giraffeDir = __SOURCE_DIRECTORY__ ++ ".." ++ ".." ++ ".." ++ ".." ++ giraffe ++ "src" ++ "Giraffe"
+    let giraffeTestsDir = __SOURCE_DIRECTORY__ ++ ".." ++ ".." ++ ".." ++ ".." ++ giraffe ++ "tests" ++ "Giraffe.Tests"
 
-    let initialProject = SyntheticProject.CreateFromRealProject giraffeDir
-    let initialProject = { initialProject with OtherOptions = "--nowarn:FS3520"::initialProject.OtherOptions }
+    let giraffeProject = SyntheticProject.CreateFromRealProject giraffeDir
+    let giraffeProject = { giraffeProject with OtherOptions = "--nowarn:FS3520"::giraffeProject.OtherOptions }
 
-    let builder = ProjectWorkflowBuilder(initialProject, useTransparentCompiler = true, autoStart = false)
+    let testsProject = SyntheticProject.CreateFromRealProject giraffeTestsDir
+    let testsProject = 
+        { testsProject 
+            with 
+                OtherOptions = "--nowarn:FS3520"::testsProject.OtherOptions 
+                DependsOn = [ giraffeProject ]
+                NugetReferences = giraffeProject.NugetReferences @ testsProject.NugetReferences
+                }
+
+    let builder = ProjectWorkflowBuilder(testsProject, useTransparentCompiler = true, autoStart = false)
     let checker = builder.Checker
 
     // Force creation and caching of options
-    SaveAndCheckProject initialProject checker |> Async.Ignore |> Async.RunSynchronously
+    SaveAndCheckProject testsProject checker |> Async.Ignore |> Async.RunSynchronously
 
     let projectAgent = MailboxProcessor.Start(fun (inbox: MailboxProcessor<ProjectRequest>) ->
         let rec loop project =
@@ -561,7 +573,7 @@ let GiraffeFuzzing signatureFiles =
                 reply.Reply project
                 return! loop project
             }
-        loop initialProject)
+        loop testsProject)
 
     let getProject () =
         projectAgent.PostAndAsyncReply(pair Get)
@@ -587,9 +599,9 @@ let GiraffeFuzzing signatureFiles =
     let modifyImplFile f = { f with ExtraSource = f.ExtraSource |> addComment }
     let modifySigFile f = { f with SignatureFile = Custom (f.SignatureFile.CustomText |> addComment) }
 
-    let getRandomModification () = modificationPicker[rng.Next(0, modificationPicker.Length)]
+    let getRandomModification () = modificationPicker |> getRandomItem
 
-    let getRandomFile (project: SyntheticProject) = project.SourceFiles[rng.Next(0, project.SourceFiles.Length)].Id
+    let getRandomFile (project: SyntheticProject) = project.GetAllFiles() |> List.toArray |> getRandomItem
 
     let log = ConcurrentBag()
 
@@ -599,9 +611,10 @@ let GiraffeFuzzing signatureFiles =
             let modify project =
                 match getRandomModification() with
                 | Update n ->
-                    let files = Set [ for _ in 1..n -> getRandomFile project ]
+                    let files = Set [ for _ in 1..n -> getRandomFile project |> snd ]
                     (project, files)
-                    ||> Seq.fold (fun p fileId -> 
+                    ||> Seq.fold (fun p file ->
+                        let fileId = file.Id
                         let project, file = project.FindInAllProjects fileId
                         let opName, f = 
                             if file.HasSignatureFile && rng.NextDouble() < signatureFileModificationProbability 
@@ -619,13 +632,13 @@ let GiraffeFuzzing signatureFiles =
     let checkingLoop n = async {
         for _ in 1 .. checkingLoopIterations do
             let! project = getProject()
-            let file = project |> getRandomFile
+            let p, file = project |> getRandomFile
 
             // TODO: timeout & cancelation
-            log.Add $"{DateTime.Now.ToShortTimeString()}| #{n} Started checking {file}"
-            let! result = checker |> checkFile file project 
+            log.Add $"{DateTime.Now.ToShortTimeString()}| #{n} Started checking {file.Id}"
+            let! result = checker |> checkFile file.Id p
             
-            log.Add $"{DateTime.Now.ToShortTimeString()}| #{n} Checked {file} %A{snd result}"
+            log.Add $"{DateTime.Now.ToShortTimeString()}| #{n} Checked {file.Id} %A{snd result}"
             expectOk result ()
 
             do! Async.Sleep (rng.Next maxCheckingDelayMs)
@@ -634,7 +647,7 @@ let GiraffeFuzzing signatureFiles =
     async {
         let! threads = 
             seq { 
-                Async.StartChild(modificationLoop) 
+                Async.StartChild(modificationLoop)
                 ignore modificationLoop
                 for n in 1..checkingThreads do 
                     Async.StartChild(checkingLoop n)
