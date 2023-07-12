@@ -1216,24 +1216,43 @@ type internal TransparentCompiler
 
                 // parse required files
                 let files =
-                    seq {
+                    [
                         yield! bootstrapInfo.SourceFiles |> Seq.takeWhile ((<>) file)
                         file
-                    }
+                    ]
 
-                let! parsedInputs = files |> Seq.map (ComputeParseFile bootstrapInfo) |> NodeCode.Parallel
+                if files.Length = 1 then
+                    return bootstrapInfo.InitialTcInfo, Graph.make Seq.empty
+                else
+                    let! parsedInputs = files |> Seq.map (ComputeParseFile bootstrapInfo) |> NodeCode.Parallel
 
-                let! graph, dependencyFiles =
-                    ComputeDependencyGraphForFile priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
-                    //ComputeDependencyGraphForProject priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
+                    let! graph, dependencyFiles =
+                        ComputeDependencyGraphForFile priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
+                        //ComputeDependencyGraphForProject priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
 
-                let! _results, tcInfo =
-                    processTypeCheckingGraph
+                    let fileIndex = parsedInputs.Length - 1
+                    //let graph = graph |> Graph.remove (function NodeToTypeCheck.PhysicalFile i | NodeToTypeCheck.ArtificialImplFile i -> i = fileIndex)
+
+                    let graph =
                         graph
-                        (processGraphNode projectSnapshot bootstrapInfo parsedInputs dependencyFiles)
-                        bootstrapInfo.InitialTcInfo
-                
-                return tcInfo, dependencyFiles
+                        |> Seq.map (fun (KeyValue (node, deps)) -> node, deps)
+                        |> Seq.filter (function NodeToTypeCheck.PhysicalFile i, _ when i = fileIndex -> false | _ -> true)
+                        |> Graph.make
+
+                    let dependencyFiles =
+                        dependencyFiles
+                        |> Seq.map (fun (KeyValue (node, deps)) -> node, deps)
+                        |> Seq.filter (fst >> (<>) fileIndex)
+                        |> Graph.make
+
+
+                    let! _results, tcInfo =
+                        processTypeCheckingGraph
+                            graph
+                            (processGraphNode projectSnapshot bootstrapInfo parsedInputs dependencyFiles)
+                            bootstrapInfo.InitialTcInfo
+
+                    return tcInfo, dependencyFiles
             }
         )
 
