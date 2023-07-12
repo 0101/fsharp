@@ -51,7 +51,7 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?logEvent: (stri
     let name = defaultArg name "N/A"
     let tok = obj ()
 
-    let es = new AsyncMemoizeEventSource(name)
+    //let es = new AsyncMemoizeEventSource(name)
 
     let cache =
         MruCache<_, 'TKey, Job<'TValue>>(
@@ -89,7 +89,7 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?logEvent: (stri
                     try
                         let _name = name
 
-                        es.ReportSize (cache.GetSize())
+                        //es.ReportSize (cache.GetSize())
 
                         let! key, action, replyChannel = inbox.Receive()
 

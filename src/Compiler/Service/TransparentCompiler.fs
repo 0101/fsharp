@@ -913,12 +913,12 @@ type internal TransparentCompiler
         (prevTcInfo: TcInfo)
         =
 
-        //let dependencyFiles = dependencyGraph |> Graph.subGraphFor fileIndex |> Graph.nodes
+        let dependencyFiles = dependencyGraph |> Graph.subGraphFor fileIndex |> Graph.nodes
         ignore dependencyGraph
 
         TcIntermediateCache.Get(
-            //projectSnapshot.OnlyWith(dependencyFiles).Key,
-            projectSnapshot.UpTo(fileIndex).Key,
+            projectSnapshot.OnlyWith(dependencyFiles).Key,
+            //projectSnapshot.UpTo(fileIndex).Key,
             node {
                 let input = parsedInput
                 let fileName = input.FileName
@@ -982,147 +982,6 @@ type internal TransparentCompiler
                         tcDependencyFiles = [ fileName ]
                         sink = sink
                     }
-            }
-        )
-
-    let mergeIntermediateResults =
-        Array.fold (fun (tcInfos: TcInfo list) (tcIntermediate: TcIntermediate) ->
-            let (Finisher (node = node; finisher = finisher)) = tcIntermediate.finisher
-
-            match tcInfos, node with
-            | [], _ -> failwith "need initial tcInfo"
-            | tcInfo :: _, NodeToTypeCheck.ArtificialImplFile idx when
-                tcInfo.stateContainsNodes.Contains(NodeToTypeCheck.PhysicalFile(idx + 1))
-                ->
-                Trace.TraceInformation $"Filtering out {node}"
-                tcInfos
-            | tcInfo :: rest, _ ->
-                let (tcEnv, topAttribs, _checkImplFileOpt, ccuSigForFile), tcState =
-                    tcInfo.tcState |> finisher
-
-                let tcEnvAtEndOfFile =
-                    if keepAllBackgroundResolutions then
-                        tcEnv
-                    else
-                        tcState.TcEnvFromImpls
-
-                { tcInfo with
-                    tcState = tcState
-                    tcEnvAtEndOfFile = tcEnvAtEndOfFile
-                    topAttribs = Some topAttribs
-                    tcDiagnosticsRev = tcIntermediate.tcDiagnosticsRev @ tcInfo.tcDiagnosticsRev
-                    tcDependencyFiles = tcIntermediate.tcDependencyFiles @ tcInfo.tcDependencyFiles
-                    latestCcuSigForFile = Some ccuSigForFile
-                    graphNode = Some node
-                    stateContainsNodes = tcInfo.stateContainsNodes |> Set.add node
-                }
-                :: tcInfo :: rest)
-
-    let typeCheckLayers bootstrapInfo projectSnapshot (parsedInputs: array<_>) graph layers =
-        let rec processLayer (layers: Set<NodeToTypeCheck> list) tcInfos =
-            node {
-                match layers, tcInfos with
-                | [], _ -> return tcInfos
-                | _, [] -> return failwith "need initial tcInfo"
-                | layer :: rest, tcInfo :: _ ->
-                    Trace.TraceInformation $"<><><> Processing layer: %A{layer}"
-
-                    let! results =
-                        layer
-                        |> Seq.filter (function
-                            | NodeToTypeCheck.ArtificialImplFile idx ->
-                                // When we have the actual PhysicalFile in the same layer as the corresponding ArtificialImplFile then we don't apply the artificial's file finisher because it's not needed and it would lead to doubling of the results
-                                if layer.Contains(NodeToTypeCheck.PhysicalFile(idx + 1)) then
-                                    Trace.TraceInformation $"Filtering out AIF [{idx}]"
-
-                                not (layer.Contains(NodeToTypeCheck.PhysicalFile(idx + 1)))
-                            | _ -> true)
-                        |> Seq.map (fun fileNode ->
-
-                            match fileNode with
-                            | NodeToTypeCheck.PhysicalFile fileIndex ->
-                                let parsedInput, parseErrors, _ = parsedInputs[fileIndex]
-
-                                ComputeTcIntermediate projectSnapshot graph fileIndex (parsedInput, parseErrors) bootstrapInfo tcInfo
-                            | NodeToTypeCheck.ArtificialImplFile fileIndex ->
-
-                                let finisher tcState =
-                                    Trace.TraceInformation $"* * * * {fileNode} Finisher"
-                                    let parsedInput, _parseErrors, _ = parsedInputs[fileIndex]
-                                    let prefixPathOpt = None
-                                    // Retrieve the type-checked signature information and add it to the TcEnvFromImpls.
-                                    AddSignatureResultToTcImplEnv
-                                        (bootstrapInfo.TcImports,
-                                         bootstrapInfo.TcGlobals,
-                                         prefixPathOpt,
-                                         TcResultsSink.NoSink,
-                                         tcState,
-                                         parsedInput)
-                                        tcState
-
-                                let tcIntermediate =
-                                    {
-                                        finisher = Finisher(fileNode, finisher)
-                                        moduleNamesDict = tcInfo.moduleNamesDict
-                                        tcDiagnosticsRev = []
-                                        tcDependencyFiles = []
-                                        sink = Unchecked.defaultof<_> // TODO: something nicer
-                                    }
-
-                                node.Return(tcIntermediate))
-                        |> NodeCode.Parallel
-
-                    return!
-                        results
-                        //|> Array.filter (function
-                        //    | {
-                        //          finisher = Finisher(node = NodeToTypeCheck.ArtificialImplFile idx)
-                        //      } ->
-                        //        // When we have the actual PhysicalFile in the same layer as the corresponding ArtificialImplFile then we don't apply the artificial's file finisher because it's not needed and it would lead to doubling of the results
-                        //        not (layer.Contains(NodeToTypeCheck.PhysicalFile(idx + 1)))
-                        //    | _ -> true)
-                        |> mergeIntermediateResults tcInfos
-                        |> processLayer rest
-            }
-
-        node {
-            let! tcInfo = processLayer layers [ bootstrapInfo.InitialTcInfo ]
-            return tcInfo, graph
-        }
-
-    // Type check everything that is needed to check given file
-    let ComputeTcPrior' (file: FSharpFile) (bootstrapInfo: BootstrapInfo) (projectSnapshot: FSharpProjectSnapshot) =
-
-        let priorSnapshot = projectSnapshot.UpTo file.Source.FileName
-        let key = priorSnapshot.Key
-
-        TcPriorCache.Get(
-            key,
-            node {
-                use _ =
-                    Activity.start "ComputeTcPrior" [| Activity.Tags.fileName, file.Source.FileName |> Path.GetFileName |]
-
-                // parse required files
-                let files =
-                    seq {
-                        yield! bootstrapInfo.SourceFiles |> Seq.takeWhile ((<>) file)
-                        file
-                    }
-
-                let! parsedInputs = files |> Seq.map (ComputeParseFile bootstrapInfo) |> NodeCode.Parallel
-
-                let! graph, dependencyFiles =
-                    ComputeDependencyGraphForFile priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
-
-                // layers that can be processed in parallel
-                let layers = Graph.leafSequence graph |> Seq.toList
-
-                // remove the final layer, which should be the target file
-                let layers = layers |> List.take (layers.Length - 1)
-
-                let! tcInfos, graph = typeCheckLayers bootstrapInfo priorSnapshot parsedInputs dependencyFiles layers
-
-                return tcInfos.Head, graph
             }
         )
 
@@ -1216,43 +1075,26 @@ type internal TransparentCompiler
 
                 // parse required files
                 let files =
-                    [
+                    seq {
                         yield! bootstrapInfo.SourceFiles |> Seq.takeWhile ((<>) file)
                         file
-                    ]
+                    }
 
-                if files.Length = 1 then
-                    return bootstrapInfo.InitialTcInfo, Graph.make Seq.empty
-                else
-                    let! parsedInputs = files |> Seq.map (ComputeParseFile bootstrapInfo) |> NodeCode.Parallel
+                let! parsedInputs = files |> Seq.map (ComputeParseFile bootstrapInfo) |> NodeCode.Parallel
 
-                    let! graph, dependencyFiles =
-                        ComputeDependencyGraphForFile priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
-                        //ComputeDependencyGraphForProject priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
+                let! graph, dependencyFiles =
+                    ComputeDependencyGraphForFile priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
+                    //ComputeDependencyGraphForProject priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
 
-                    let fileIndex = parsedInputs.Length - 1
-                    //let graph = graph |> Graph.remove (function NodeToTypeCheck.PhysicalFile i | NodeToTypeCheck.ArtificialImplFile i -> i = fileIndex)
-
-                    let graph =
+                let! results, tcInfo =
+                    processTypeCheckingGraph
                         graph
-                        |> Seq.map (fun (KeyValue (node, deps)) -> node, deps)
-                        |> Seq.filter (function NodeToTypeCheck.PhysicalFile i, _ when i = fileIndex -> false | _ -> true)
-                        |> Graph.make
+                        (processGraphNode projectSnapshot bootstrapInfo parsedInputs dependencyFiles)
+                        bootstrapInfo.InitialTcInfo
 
-                    let dependencyFiles =
-                        dependencyFiles
-                        |> Seq.map (fun (KeyValue (node, deps)) -> node, deps)
-                        |> Seq.filter (fst >> (<>) fileIndex)
-                        |> Graph.make
+                let lastResult = results |> List.head |> snd
 
-
-                    let! _results, tcInfo =
-                        processTypeCheckingGraph
-                            graph
-                            (processGraphNode projectSnapshot bootstrapInfo parsedInputs dependencyFiles)
-                            bootstrapInfo.InitialTcInfo
-
-                    return tcInfo, dependencyFiles
+                return lastResult, tcInfo, dependencyFiles
             }
         )
 
@@ -1309,17 +1151,16 @@ type internal TransparentCompiler
                     let! parseTree, parseDiagnostics, _sourceText = ComputeParseFile bootstrapInfo file
                     let! parseResults, _sourceText = getParseResult bootstrapInfo creationDiags fileName
 
-                    let! priorTcInfo, graph = ComputeTcPrior file bootstrapInfo projectSnapshot
+                    let! result, priorTcInfo, graph = ComputeTcPrior file bootstrapInfo projectSnapshot
+
+                    let (tcEnv, _topAttribs, checkedImplFileOpt, ccuSigForFile) = result
+
+                    let tcState = priorTcInfo.tcState
 
                     let fileIndex = projectSnapshot.IndexOf fileName
 
                     let! tcIntermediate =
                         ComputeTcIntermediate projectSnapshot graph fileIndex (parseTree, parseDiagnostics) bootstrapInfo priorTcInfo
-
-                    let (Finisher (finisher = finisher)) = tcIntermediate.finisher
-
-                    let (tcEnv, _topAttribs, checkedImplFileOpt, ccuSigForFile), tcState =
-                        priorTcInfo.tcState |> finisher
 
                     let sink = tcIntermediate.sink
 
@@ -1590,7 +1431,7 @@ type internal TransparentCompiler
 
                 let file = bootstrapInfo.GetFile fileName
 
-                let! tcInfo, graph = ComputeTcPrior file bootstrapInfo projectSnapshot
+                let! _, tcInfo, graph = ComputeTcPrior file bootstrapInfo projectSnapshot
                 let! parseTree, parseDiagnostics, _sourceText = ComputeParseFile bootstrapInfo file
 
                 let fileIndex = projectSnapshot.IndexOf fileName

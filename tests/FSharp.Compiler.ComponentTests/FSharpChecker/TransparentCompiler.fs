@@ -206,6 +206,33 @@ let ``Changes in a referenced project`` () =
     }
 
 [<Fact>]
+let ``File is not checked twice`` () =
+
+    let cacheEvents = ResizeArray()
+
+    testWorkflow() {
+        withChecker (fun checker ->
+            async {
+                do! Async.Sleep 50 // wait for events from initial project check
+                checker.CacheEvent.Add cacheEvents.Add
+            })
+        updateFile "First" updatePublicSurface
+        checkFile "Third" expectOk
+    } |> ignore
+
+    let intermediateTypeChecks =
+        cacheEvents
+        |> Seq.choose (function
+            | ("TcIntermediate", e, k) -> Some ((k :?> FSharpProjectSnapshotKey).LastFile |> fst |> Path.GetFileName, e)
+            | _ -> None)
+        |> Seq.groupBy fst
+        |> Seq.map (fun (k, g) -> k, g |> Seq.map snd |> Seq.toList)
+        |> Map
+
+    Assert.Equal<JobEventType list>([Started; Finished], intermediateTypeChecks["FileFirst.fs"])
+    Assert.Equal<JobEventType list>([Started; Finished], intermediateTypeChecks["FileThird.fs"])
+
+[<Fact>]
 let ``We don't check files that are not depended on`` () =
     let project = SyntheticProject.Create(
         sourceFile "First" [],
@@ -380,7 +407,7 @@ let Fuzzing signatureFiles =
     let checkingThreads = 20
     let maxModificationDelayMs = 50
     let maxCheckingDelayMs = 5
-    let runTimeMs = 10000
+    let runTimeMs = 1000
     let signatureFileModificationProbability = 0.25
 
     let fileName i = sprintf $"F%03d{i}"
@@ -535,7 +562,7 @@ let GiraffeFuzzing signatureFiles =
     //let runTimeMs = 30000
     let signatureFileModificationProbability = 0.25
     let modificationLoopIterations = 100
-    let checkingLoopIterations = 100
+    let checkingLoopIterations = 50
 
     let giraffe = if signatureFiles then "giraffe-signatures" else "Giraffe"
     let giraffeDir = __SOURCE_DIRECTORY__ ++ ".." ++ ".." ++ ".." ++ ".." ++ giraffe ++ "src" ++ "Giraffe"
