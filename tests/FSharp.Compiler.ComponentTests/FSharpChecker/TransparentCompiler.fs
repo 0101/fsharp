@@ -690,4 +690,3 @@ let GiraffeFuzzing signatureFiles =
     } |> Async.RunSynchronously
 
     builder.DeleteProjectDir()
-    ()
