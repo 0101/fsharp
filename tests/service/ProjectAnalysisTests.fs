@@ -4636,8 +4636,10 @@ let callToOverload = B(5).Overload(4)
     let args = mkProjectCommandLineArgs (dllName, fileNames)
 
 [<Test>]
-let ``Test project36 FSharpMemberOrFunctionOrValue.IsBaseValue`` () =
-    let keepAssemblyContentsChecker = FSharpChecker.Create(keepAssemblyContents=true)
+[<TestCase true>]
+[<TestCase false>]
+let ``Test project36 FSharpMemberOrFunctionOrValue.IsBaseValue`` useTransparentCompiler =
+    let keepAssemblyContentsChecker = FSharpChecker.Create(keepAssemblyContents=true, useTransparentCompiler=useTransparentCompiler)
     let options =  keepAssemblyContentsChecker.GetProjectOptionsFromCommandLineArgs (Project36.projFileName, Project36.args)
     let wholeProjectResults =
         keepAssemblyContentsChecker.ParseAndCheckProject(options)

@@ -74,6 +74,8 @@ type internal TcInfo =
         graphNode: NodeToTypeCheck option
 
         stateContainsNodes: Set<NodeToTypeCheck>
+
+        sink: TcResultsSinkImpl option
     }
 
     member x.TcDiagnostics = Array.concat (List.rev x.tcDiagnosticsRev)
@@ -448,6 +450,7 @@ type internal TransparentCompiler
                     sigNameOpt = None
                     graphNode = None
                     stateContainsNodes = Set.empty
+                    sink = None
                 }
 
             return tcImports, tcInfo
@@ -1012,12 +1015,14 @@ type internal TransparentCompiler
                             { tcInfo with
                                 tcState = tcState
                                 tcEnvAtEndOfFile = tcEnvAtEndOfFile
+                                moduleNamesDict = tcIntermediate.moduleNamesDict
                                 topAttribs = Some topAttribs
                                 tcDiagnosticsRev = tcIntermediate.tcDiagnosticsRev @ tcInfo.tcDiagnosticsRev
                                 tcDependencyFiles = tcIntermediate.tcDependencyFiles @ tcInfo.tcDependencyFiles
                                 latestCcuSigForFile = Some ccuSigForFile
                                 graphNode = Some node
                                 stateContainsNodes = tcInfo.stateContainsNodes |> Set.add node
+                                sink = Some tcIntermediate.sink
                             })
                     )
 
@@ -1148,21 +1153,21 @@ type internal TransparentCompiler
 
                     let file = bootstrapInfo.GetFile fileName
 
-                    let! parseTree, parseDiagnostics, _sourceText = ComputeParseFile bootstrapInfo file
+                    //let! parseTree, parseDiagnostics, _sourceText = ComputeParseFile bootstrapInfo file
                     let! parseResults, _sourceText = getParseResult bootstrapInfo creationDiags fileName
 
-                    let! result, priorTcInfo, graph = ComputeTcPrior file bootstrapInfo projectSnapshot
+                    let! result, priorTcInfo, _graph = ComputeTcPrior file bootstrapInfo projectSnapshot
 
                     let (tcEnv, _topAttribs, checkedImplFileOpt, ccuSigForFile) = result
 
                     let tcState = priorTcInfo.tcState
 
-                    let fileIndex = projectSnapshot.IndexOf fileName
+                    //let fileIndex = projectSnapshot.IndexOf fileName
 
-                    let! tcIntermediate =
-                        ComputeTcIntermediate projectSnapshot graph fileIndex (parseTree, parseDiagnostics) bootstrapInfo priorTcInfo
+                    //let! tcIntermediate =
+                    //    ComputeTcIntermediate projectSnapshot graph fileIndex (parseTree, parseDiagnostics) bootstrapInfo priorTcInfo
 
-                    let sink = tcIntermediate.sink
+                    let sink = priorTcInfo.sink.Value // TODO: fix
 
                     let tcResolutions = sink.GetResolutions()
                     let tcSymbolUses = sink.GetSymbolUses()
@@ -1174,8 +1179,8 @@ type internal TransparentCompiler
                         seq {
                             yield! priorTcInfo.TcDiagnostics
 
-                            for x in tcIntermediate.tcDiagnosticsRev do
-                                yield! x
+                            //for x in tcIntermediate.tcDiagnosticsRev do
+                            //    yield! x
                         }
 
                     let diagnosticsOptions = bootstrapInfo.TcConfig.diagnosticsOptions
@@ -1401,7 +1406,7 @@ type internal TransparentCompiler
                          bootstrapInfo.TcImports,
                          tcState.Ccu,
                          tcState.CcuSig,
-                         Choice2Of2 Seq.empty, // TODO: SymbolUses,
+                         Choice2Of2 (async.Return Seq.empty), // TODO: SymbolUses,
                          topAttribs,
                          getAssemblyData,
                          ilAssemRef,
@@ -1431,15 +1436,9 @@ type internal TransparentCompiler
 
                 let file = bootstrapInfo.GetFile fileName
 
-                let! _, tcInfo, graph = ComputeTcPrior file bootstrapInfo projectSnapshot
-                let! parseTree, parseDiagnostics, _sourceText = ComputeParseFile bootstrapInfo file
-
-                let fileIndex = projectSnapshot.IndexOf fileName
-
-                let! { sink = sink } =
-                    ComputeTcIntermediate projectSnapshot graph fileIndex (parseTree, parseDiagnostics) bootstrapInfo tcInfo
-
-                return Some(sink, bootstrapInfo)
+                let! _, tcInfo, _graph = ComputeTcPrior file bootstrapInfo projectSnapshot
+                
+                return tcInfo.sink |> Option.map (fun sink -> sink, bootstrapInfo)
         }
 
     let ComputeSemanticClassification (fileName: string, projectSnapshot: FSharpProjectSnapshot) =
@@ -1547,7 +1546,7 @@ type internal TransparentCompiler
         member this.BeforeBackgroundFileCheck: IEvent<string * FSharpProjectOptions> =
             backgroundCompiler.BeforeBackgroundFileCheck
 
-        member _.CheckFileInProject
+        member this.CheckFileInProject
             (
                 parseResults: FSharpParseFileResults,
                 fileName: string,
@@ -1556,9 +1555,14 @@ type internal TransparentCompiler
                 options: FSharpProjectOptions,
                 userOpName: string
             ) : NodeCode<FSharpCheckFileAnswer> =
-            backgroundCompiler.CheckFileInProject(parseResults, fileName, fileVersion, sourceText, options, userOpName)
-
-        member _.CheckFileInProjectAllowingStaleCachedResults
+            node {
+                let! snapshot = FSharpProjectSnapshot.FromOptions(options, fileName, fileVersion, sourceText) |> NodeCode.AwaitAsync
+                ignore parseResults
+                let! _, result = this.ParseAndCheckFileInProject(fileName, snapshot, userOpName)
+                return result
+            }
+            
+        member this.CheckFileInProjectAllowingStaleCachedResults
             (
                 parseResults: FSharpParseFileResults,
                 fileName: string,
@@ -1567,14 +1571,12 @@ type internal TransparentCompiler
                 options: FSharpProjectOptions,
                 userOpName: string
             ) : NodeCode<FSharpCheckFileAnswer option> =
-            backgroundCompiler.CheckFileInProjectAllowingStaleCachedResults(
-                parseResults,
-                fileName,
-                fileVersion,
-                sourceText,
-                options,
-                userOpName
-            )
+            node {
+                let! snapshot = FSharpProjectSnapshot.FromOptions(options, fileName, fileVersion, sourceText) |> NodeCode.AwaitAsync
+                ignore parseResults
+                let! _, result = this.ParseAndCheckFileInProject(fileName, snapshot, userOpName)
+                return Some result
+            }
 
         member _.ClearCache(options: seq<FSharpProjectOptions>, userOpName: string) : unit =
             backgroundCompiler.ClearCache(options, userOpName)
@@ -1588,7 +1590,7 @@ type internal TransparentCompiler
         member _.FileParsed: IEvent<string * FSharpProjectOptions> =
             backgroundCompiler.FileParsed
 
-        member _.FindReferencesInFile
+        member this.FindReferencesInFile
             (
                 fileName: string,
                 options: FSharpProjectOptions,
@@ -1596,7 +1598,11 @@ type internal TransparentCompiler
                 canInvalidateProject: bool,
                 userOpName: string
             ) : NodeCode<seq<range>> =
-            backgroundCompiler.FindReferencesInFile(fileName, options, symbol, canInvalidateProject, userOpName)
+            node {
+                ignore canInvalidateProject
+                let! snapshot = FSharpProjectSnapshot.FromOptions options |> NodeCode.AwaitAsync
+                return! this.FindReferencesInFile(fileName, snapshot, symbol, userOpName)
+            }
 
         member this.FindReferencesInFile(fileName, projectSnapshot, symbol, userOpName) =
             this.FindReferencesInFile(fileName, projectSnapshot, symbol, userOpName)
@@ -1604,38 +1610,57 @@ type internal TransparentCompiler
         member _.FrameworkImportsCache: FrameworkImportsCache =
             backgroundCompiler.FrameworkImportsCache
 
-        member _.GetAssemblyData(options: FSharpProjectOptions, userOpName: string) : NodeCode<ProjectAssemblyDataResult> =
-            backgroundCompiler.GetAssemblyData(options, userOpName)
+        member this.GetAssemblyData(options: FSharpProjectOptions, userOpName: string) : NodeCode<ProjectAssemblyDataResult> =
+            node {
+                let! snapshot = FSharpProjectSnapshot.FromOptions options |> NodeCode.AwaitAsync
+                return! this.GetAssemblyData(snapshot, userOpName)
+            }
 
         member this.GetAssemblyData(projectSnapshot: FSharpProjectSnapshot, userOpName: string) : NodeCode<ProjectAssemblyDataResult> =
             this.GetAssemblyData(projectSnapshot, userOpName)
 
-        member _.GetBackgroundCheckResultsForFileInProject
+        member this.GetBackgroundCheckResultsForFileInProject
             (
                 fileName: string,
                 options: FSharpProjectOptions,
                 userOpName: string
             ) : NodeCode<FSharpParseFileResults * FSharpCheckFileResults> =
-            backgroundCompiler.GetBackgroundCheckResultsForFileInProject(fileName, options, userOpName)
+            node {
+                let! snapshot = FSharpProjectSnapshot.FromOptions options |> NodeCode.AwaitAsync
+                match! this.ParseAndCheckFileInProject(fileName, snapshot, userOpName) with
+                | parseResult, FSharpCheckFileAnswer.Succeeded checkResult -> 
+                    return parseResult, checkResult
+                | parseResult, FSharpCheckFileAnswer.Aborted _ -> 
+                    return parseResult, FSharpCheckFileResults.MakeEmpty(fileName, [||], true)
+            }
 
-        member _.GetBackgroundParseResultsForFileInProject
+        member this.GetBackgroundParseResultsForFileInProject
             (
                 fileName: string,
                 options: FSharpProjectOptions,
                 userOpName: string
             ) : NodeCode<FSharpParseFileResults> =
-            backgroundCompiler.GetBackgroundParseResultsForFileInProject(fileName, options, userOpName)
+            node {
+                let! snapshot = FSharpProjectSnapshot.FromOptions options |> NodeCode.AwaitAsync
+                return! this.ParseFile(fileName, snapshot, userOpName)
+            }
 
-        member _.GetCachedCheckFileResult
+        member this.GetCachedCheckFileResult
             (
                 builder: IncrementalBuilder,
                 fileName: string,
                 sourceText: ISourceText,
                 options: FSharpProjectOptions
             ) : NodeCode<(FSharpParseFileResults * FSharpCheckFileResults) option> =
-            backgroundCompiler.GetCachedCheckFileResult(builder, fileName, sourceText, options)
+            node {
+                ignore builder
+                let! snapshot = FSharpProjectSnapshot.FromOptions(options, fileName, 1, sourceText) |> NodeCode.AwaitAsync
+                match! this.ParseAndCheckFileInProject(fileName, snapshot, "GetCachedCheckFileResult") with
+                | parseResult, FSharpCheckFileAnswer.Succeeded checkResult -> return Some (parseResult, checkResult)
+                | _, FSharpCheckFileAnswer.Aborted _ -> return None
+            }
 
-        member _.GetProjectOptionsFromScript
+        member this.GetProjectOptionsFromScript
             (
                 fileName: string,
                 sourceText: ISourceText,
@@ -1663,28 +1688,32 @@ type internal TransparentCompiler
                 userOpName
             )
 
-        member _.GetSemanticClassificationForFile(fileName: string, snapshot: FSharpProjectSnapshot, userOpName: string) =
+        member this.GetSemanticClassificationForFile(fileName: string, snapshot: FSharpProjectSnapshot, userOpName: string) =
             ignore userOpName
             ComputeSemanticClassification(fileName, snapshot)
 
-        member _.GetSemanticClassificationForFile
+        member this.GetSemanticClassificationForFile
             (
                 fileName: string,
                 options: FSharpProjectOptions,
                 userOpName: string
             ) : NodeCode<EditorServices.SemanticClassificationView option> =
-            backgroundCompiler.GetSemanticClassificationForFile(fileName, options, userOpName)
+            node {
+                ignore userOpName
+                let! snapshot = FSharpProjectSnapshot.FromOptions options |> NodeCode.AwaitAsync
+                return! ComputeSemanticClassification(fileName, snapshot)
+            }
 
-        member _.InvalidateConfiguration(options: FSharpProjectOptions, userOpName: string) : unit =
+        member this.InvalidateConfiguration(options: FSharpProjectOptions, userOpName: string) : unit =
             backgroundCompiler.InvalidateConfiguration(options, userOpName)
 
-        member _.NotifyFileChanged(fileName: string, options: FSharpProjectOptions, userOpName: string) : NodeCode<unit> =
+        member this.NotifyFileChanged(fileName: string, options: FSharpProjectOptions, userOpName: string) : NodeCode<unit> =
             backgroundCompiler.NotifyFileChanged(fileName, options, userOpName)
 
-        member _.NotifyProjectCleaned(options: FSharpProjectOptions, userOpName: string) : Async<unit> =
+        member this.NotifyProjectCleaned(options: FSharpProjectOptions, userOpName: string) : Async<unit> =
             backgroundCompiler.NotifyProjectCleaned(options, userOpName)
 
-        member _.ParseAndCheckFileInProject
+        member this.ParseAndCheckFileInProject
             (
                 fileName: string,
                 fileVersion: int,
@@ -1692,14 +1721,20 @@ type internal TransparentCompiler
                 options: FSharpProjectOptions,
                 userOpName: string
             ) : NodeCode<FSharpParseFileResults * FSharpCheckFileAnswer> =
-
-            backgroundCompiler.ParseAndCheckFileInProject(fileName, fileVersion, sourceText, options, userOpName)
+            node {
+                let! snapshot = FSharpProjectSnapshot.FromOptions(options, fileName, fileVersion, sourceText) |> NodeCode.AwaitAsync
+                return! this.ParseAndCheckFileInProject(fileName, snapshot, userOpName)
+            }
 
         member this.ParseAndCheckFileInProject(fileName: string, projectSnapshot: FSharpProjectSnapshot, userOpName: string) =
             this.ParseAndCheckFileInProject(fileName, projectSnapshot, userOpName)
 
-        member _.ParseAndCheckProject(options: FSharpProjectOptions, userOpName: string) : NodeCode<FSharpCheckProjectResults> =
-            backgroundCompiler.ParseAndCheckProject(options, userOpName)
+        member this.ParseAndCheckProject(options: FSharpProjectOptions, userOpName: string) : NodeCode<FSharpCheckProjectResults> =
+            node {
+                ignore userOpName
+                let! snapshot = FSharpProjectSnapshot.FromOptions options |> NodeCode.AwaitAsync
+                return! ComputeParseAndCheckProject snapshot
+            }
 
         member this.ParseAndCheckProject(projectSnapshot: FSharpProjectSnapshot, userOpName: string) : NodeCode<FSharpCheckProjectResults> =
             ignore userOpName
@@ -1708,7 +1743,7 @@ type internal TransparentCompiler
         member this.ParseFile(fileName, projectSnapshot, userOpName) =
             this.ParseFile(fileName, projectSnapshot, userOpName)
 
-        member _.ParseFile
+        member this.ParseFile
             (
                 fileName: string,
                 sourceText: ISourceText,
@@ -1719,10 +1754,10 @@ type internal TransparentCompiler
             ) : Async<FSharpParseFileResults> =
             backgroundCompiler.ParseFile(fileName, sourceText, options, cache, flatErrors, userOpName)
 
-        member _.ProjectChecked: IEvent<FSharpProjectOptions> =
+        member this.ProjectChecked: IEvent<FSharpProjectOptions> =
             backgroundCompiler.ProjectChecked
 
-        member _.TryGetRecentCheckResultsForFile
+        member this.TryGetRecentCheckResultsForFile
             (
                 fileName: string,
                 options: FSharpProjectOptions,
