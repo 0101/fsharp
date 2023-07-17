@@ -3,8 +3,8 @@ namespace Internal.Utilities.Collections
 open System
 open System.Collections.Generic
 open System.Threading
-
 open FSharp.Compiler.BuildGraph
+
 
 type internal Action<'TKey, 'TValue> =
     | GetOrCompute of NodeCode<'TValue> * CancellationToken
@@ -22,16 +22,119 @@ type internal JobEventType =
     | Finished
     | Canceled
 
+[<StructuralEquality; NoComparison>]
+type internal ValueLink<'T when 'T: not struct> =
+    | Strong of 'T
+    | Weak of WeakReference<'T>
+
+type internal LruCache<'TKey, 'TValue when 'TKey: equality and 'TValue: not struct>(keepStrongly, ?keepWeakly, ?requiredToKeep) =
+
+    let keepWeakly = defaultArg keepWeakly 100
+    let requiredToKeep = defaultArg requiredToKeep (fun _ -> false)
+    
+    let dictionary = Dictionary<_, _>()
+
+    let strongList = LinkedList<'TKey * ValueLink<'TValue>>()
+    let weakList = LinkedList<'TKey * ValueLink<'TValue>>()
+
+    let rec removeCollected (node: LinkedListNode<'TKey * ValueLink<'TValue>>) = 
+        if node <> null then
+            let k, value = node.Value
+            match value with
+            | Weak w ->
+                let next = node.Next
+                match w.TryGetTarget() with
+                | false, _ ->
+                    weakList.Remove node
+                    dictionary.Remove k |> ignore
+                | _ -> ()
+                removeCollected next
+            | _ -> 
+                failwith "Illegal state, strong reference in weak list"
+
+    let cutWeakListIfTooLong() =
+        if weakList.Count > keepWeakly then 
+            removeCollected weakList.First
+
+            let mutable node = weakList.Last
+            while weakList.Count > keepWeakly && node <> null do
+                let previous = node.Previous
+                weakList.Remove node
+                dictionary.Remove (fst node.Value) |> ignore
+                node <- previous
+
+    let cutStrongListIfTooLong() = 
+        let mutable node = strongList.Last
+        while strongList.Count > keepStrongly && node <> null do
+            let previous = node.Previous
+            match node.Value with
+            | _, Strong v when requiredToKeep v -> ()
+            | k, Strong v ->
+                strongList.Remove node
+                node.Value <- k, Weak (WeakReference<_> v)
+                weakList.AddFirst node
+            | _key, _ -> failwith "Illegal state, weak reference in strong list"
+            node <- previous
+        cutWeakListIfTooLong()
+
+    member _.Set(key, value) = 
+        if dictionary.ContainsKey key then
+            let node: LinkedListNode<'TKey * ValueLink<'TValue>> = dictionary[key]
+            node.Value <- (key, Strong value)
+            match node.Value with
+            | _, Strong _ ->
+                strongList.Remove node
+                strongList.AddFirst node
+            | _, Weak _ ->
+                weakList.Remove node
+                strongList.AddFirst node
+                cutStrongListIfTooLong()
+        else
+            let node = strongList.AddFirst(value = (key, Strong value))
+            dictionary[key] <- node
+            cutStrongListIfTooLong()
+        
+    member _.TryGet(key) = 
+        
+        match dictionary.TryGetValue key with
+        | true, node ->
+            match node.Value with
+            | _, Strong v ->
+                strongList.Remove node
+                strongList.AddFirst node
+                Some v
+            | _, Weak w ->
+                match w.TryGetTarget() with
+                | true, v ->
+                    weakList.Remove node
+                    strongList.AddFirst node
+                    Some v
+                | _ ->
+                    weakList.Remove node
+                    dictionary.Remove key |> ignore
+                    None
+        | _ -> None
+
+    member _.Remove(key) =
+        
+        match dictionary.TryGetValue key with
+        | true, node ->
+            dictionary.Remove key |> ignore
+            match node.Value with
+            | _, Strong _ -> strongList.Remove node
+            | _, Weak _ -> weakList.Remove node
+        | _ -> ()
+
 type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?logEvent: (string -> JobEventType * 'TKey -> unit), ?name: string) =
 
     let name = defaultArg name "N/A"
-    let tok = obj ()
+    //let tok = obj ()
 
     let cache =
-        MruCache<_, 'TKey, Job<'TValue>>(
-            keepStrongly = 30,
-            keepMax = 200,
-            areSame = (fun (x, y) -> x = y),
+        LruCache<'TKey, Job<'TValue>>(
+            keepStrongly = 2,
+            keepWeakly = 5,
+            //areSame = (fun (x, y) -> x = y),
             requiredToKeep =
                 function
                 | Running _ -> true
@@ -65,7 +168,7 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?logEvent: (stri
 
                         let! key, action, replyChannel = inbox.Receive()
 
-                        match action, cache.TryGet(tok, key) with
+                        match action, cache.TryGet(key) with
                         | GetOrCompute _, Some (Completed job) -> replyChannel.Reply job
                         | GetOrCompute (_, ct), Some (Running (job, _)) ->
                             incrRequestCount key
@@ -91,7 +194,7 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?logEvent: (stri
 
                             let job = NodeCode.AwaitTask startedComputation
 
-                            cache.Set(tok, key, (Running(job, cts)))
+                            cache.Set(key, (Running(job, cts)))
 
                             incrRequestCount key
 
@@ -107,7 +210,7 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?logEvent: (stri
 
                             else
                                 cts.Cancel()
-                                cache.RemoveAnySimilar(tok, key)
+                                cache.Remove(key)
                                 requestCounts.Remove key |> ignore
                                 log (Canceled, key)
 
@@ -117,7 +220,7 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?logEvent: (stri
                         | JobCompleted result, Some (Running _)
                         // Job could be evicted from cache while it's running
                         | JobCompleted result, None ->
-                            cache.Set(tok, key, (Completed(node.Return result)))
+                            cache.Set(key, (Completed(node.Return result)))
                             requestCounts.Remove key |> ignore
                             log (Finished, key)
 
