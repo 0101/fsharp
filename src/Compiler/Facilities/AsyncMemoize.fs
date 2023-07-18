@@ -34,6 +34,7 @@ type internal LruCache<'TKey, 'TValue when 'TKey: equality and 'TValue: not stru
     
     let dictionary = Dictionary<_, _>()
 
+    // Lists to keep track of when items were last accessed. First item is most recently accessed.
     let strongList = LinkedList<'TKey * ValueLink<'TValue>>()
     let weakList = LinkedList<'TKey * ValueLink<'TValue>>()
 
@@ -73,26 +74,36 @@ type internal LruCache<'TKey, 'TValue when 'TKey: equality and 'TValue: not stru
                 strongList.Remove node
                 node.Value <- k, Weak (WeakReference<_> v)
                 weakList.AddFirst node
-            | _key, _ -> failwith "Illegal state, weak reference in strong list"
+            | _key, _ -> failwith "Invalid state, weak reference in strong list"
             node <- previous
         cutWeakListIfTooLong()
 
+    let pushNodeToTop (node: LinkedListNode<_>) =
+        match node.Value with
+        | _, Strong _ ->
+            strongList.AddFirst node
+            cutStrongListIfTooLong()
+        | _, Weak _ ->
+            failwith "Invalid operation, pusing weak reference to strong list"
+
+    let pushValueToTop key value =
+        let node = strongList.AddFirst(value=(key, Strong value))
+        cutStrongListIfTooLong()
+        node
+
     member _.Set(key, value) = 
         if dictionary.ContainsKey key then
-            let node: LinkedListNode<'TKey * ValueLink<'TValue>> = dictionary[key]
-            node.Value <- (key, Strong value)
+            let node: LinkedListNode<_> = dictionary[key]
             match node.Value with
-            | _, Strong _ ->
-                strongList.Remove node
-                strongList.AddFirst node
-            | _, Weak _ ->
-                weakList.Remove node
-                strongList.AddFirst node
-                cutStrongListIfTooLong()
+            | _, Strong _ -> strongList.Remove node
+            | _, Weak _ -> weakList.Remove node
+
+            node.Value <- key, Strong value
+            pushNodeToTop node
+
         else
-            let node = strongList.AddFirst(value = (key, Strong value))
+            let node = pushValueToTop key value
             dictionary[key] <- node
-            cutStrongListIfTooLong()
         
     member _.TryGet(key) = 
         
@@ -101,13 +112,15 @@ type internal LruCache<'TKey, 'TValue when 'TKey: equality and 'TValue: not stru
             match node.Value with
             | _, Strong v ->
                 strongList.Remove node
-                strongList.AddFirst node
+                pushNodeToTop node
                 Some v
+
             | _, Weak w ->
                 match w.TryGetTarget() with
                 | true, v ->
                     weakList.Remove node
-                    strongList.AddFirst node
+                    let node = pushValueToTop key v
+                    dictionary[key] <- node
                     Some v
                 | _ ->
                     weakList.Remove node
@@ -132,8 +145,8 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?logEvent: (stri
 
     let cache =
         LruCache<'TKey, Job<'TValue>>(
-            keepStrongly = 2,
-            keepWeakly = 5,
+            keepStrongly = 20,
+            keepWeakly = 100,
             //areSame = (fun (x, y) -> x = y),
             requiredToKeep =
                 function
