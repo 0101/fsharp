@@ -261,41 +261,41 @@ type internal TransparentCompiler
     // Is having just one of these ok?
     let lexResourceManager = Lexhelp.LexResourceManager()
 
-    let cacheEvent = new Event<string * JobEventType * obj>()
+    let cacheEvent = new Event<string * JobEvent * obj>()
     let triggerCacheEvent name (e, k) = cacheEvent.Trigger(name, e, k)
 
-    let ParseFileCache = AsyncMemoize(triggerCacheEvent, "ParseFile")
+    let ParseFileCache = AsyncMemoize(logEvent=triggerCacheEvent, name="ParseFile")
 
     let ParseAndCheckFileInProjectCache =
-        AsyncMemoize(triggerCacheEvent, "ParseAndCheckFileInProject")
+        AsyncMemoize(logEvent=triggerCacheEvent, name="ParseAndCheckFileInProject")
 
     let ParseAndCheckAllFilesInProjectCache =
-        AsyncMemoize(triggerCacheEvent, "ParseAndCheckFullProject")
+        AsyncMemoize(logEvent=triggerCacheEvent, name="ParseAndCheckFullProject")
 
     let ParseAndCheckProjectCache =
-        AsyncMemoize(triggerCacheEvent, "ParseAndCheckProject")
+        AsyncMemoize(logEvent=triggerCacheEvent, name="ParseAndCheckProject")
 
-    let FrameworkImportsCache = AsyncMemoize(triggerCacheEvent, "FrameworkImports")
+    let FrameworkImportsCache = AsyncMemoize(logEvent=triggerCacheEvent, name="FrameworkImports")
 
     let BootstrapInfoStaticCache =
-        AsyncMemoize(triggerCacheEvent, "BootstrapInfoStatic")
+        AsyncMemoize(logEvent=triggerCacheEvent, name="BootstrapInfoStatic")
 
-    let BootstrapInfoCache = AsyncMemoize(triggerCacheEvent, "BootstrapInfo")
+    let BootstrapInfoCache = AsyncMemoize(logEvent=triggerCacheEvent, name="BootstrapInfo")
 
-    let TcFileCache = AsyncMemoize(triggerCacheEvent, "TcPrior")
+    let TcFileCache = AsyncMemoize(logEvent=triggerCacheEvent, name="TcPrior")
 
-    let TcIntermediateCache = AsyncMemoize(triggerCacheEvent, "TcIntermediate")
+    let TcIntermediateCache = AsyncMemoize(logEvent=triggerCacheEvent, name="TcIntermediate")
 
-    let DependencyGraphCache = AsyncMemoize(triggerCacheEvent, "DependencyGraph")
+    let DependencyGraphCache = AsyncMemoize(logEvent=triggerCacheEvent, name="DependencyGraph")
 
-    let ProjectExtrasCache = AsyncMemoize(triggerCacheEvent, "ProjectExtras")
+    let ProjectExtrasCache = AsyncMemoize(logEvent=triggerCacheEvent, name="ProjectExtras")
 
-    let AssemblyDataCache = AsyncMemoize(triggerCacheEvent, "AssemblyData")
+    let AssemblyDataCache = AsyncMemoize(logEvent=triggerCacheEvent, name="AssemblyData")
 
     let SemanticClassificationCache =
-        AsyncMemoize(triggerCacheEvent, "SemanticClassification")
+        AsyncMemoize(logEvent=triggerCacheEvent, name="SemanticClassification")
 
-    let ItemKeyStoreCache = AsyncMemoize(triggerCacheEvent, "ItemKeyStore")
+    let ItemKeyStoreCache = AsyncMemoize(logEvent=triggerCacheEvent, name="ItemKeyStore")
 
     // We currently share one global dependency provider for all scripts for the FSharpChecker.
     // For projects, one is used per project.
@@ -898,13 +898,47 @@ type internal TransparentCompiler
             return nodeGraph, graph
         }
 
+    let removeImplFilesThatHaveSignatures (projectSnapshot: FSharpProjectSnapshot) (graph: Graph<FileIndex>) = 
+
+        let removeIndexes =
+            projectSnapshot.SourceFileNames
+            |> Seq.mapi pair
+            |> Seq.groupBy (snd >> (fun fileName -> if fileName.EndsWith(".fsi") then fileName.Substring(0, fileName.Length - 1) else fileName))
+            |> Seq.map (snd >> (Seq.toList))
+            |> Seq.choose (function [idx1, _; idx2, _] -> max idx1 idx2 |> Some | _ -> None)
+            |> Set
+
+        graph
+        |> Seq.filter (fun x -> not (removeIndexes.Contains x.Key))
+        |> Seq.map (fun x -> x.Key, x.Value |> Array.filter (fun node -> not (removeIndexes.Contains node)))
+        |> Graph.make
+
+    let removeImplFilesThatHaveSignaturesExceptLastOne (projectSnapshot: FSharpProjectSnapshot) (graph: Graph<FileIndex>) = 
+
+        let removeIndexes =
+            projectSnapshot.SourceFileNames
+            |> Seq.mapi pair
+            |> Seq.groupBy (snd >> (fun fileName -> if fileName.EndsWith(".fsi") then fileName.Substring(0, fileName.Length - 1) else fileName))
+            |> Seq.map (snd >> (Seq.toList))
+            |> Seq.choose (function [idx1, _; idx2, _] -> max idx1 idx2 |> Some | _ -> None)
+            |> Set
+            // Don't remove the last file
+            |> Set.remove (projectSnapshot.SourceFiles.Length - 1)
+
+        graph
+        |> Seq.filter (fun x -> not (removeIndexes.Contains x.Key))
+        |> Seq.map (fun x -> x.Key, x.Value |> Array.filter (fun node -> not (removeIndexes.Contains node)))
+        |> Graph.make
+
     let ComputeDependencyGraphForFile (priorSnapshot: FSharpProjectSnapshot) parsedInputs (tcConfig: TcConfig) =
         let key = priorSnapshot.SourceFiles.Key(), DependencyGraphType.File
-        let lastFileIndex = (parsedInputs |> Array.length) - 1
-        DependencyGraphCache.Get(key, computeDependencyGraph parsedInputs tcConfig (Graph.subGraphFor lastFileIndex))
+        //let lastFileIndex = (parsedInputs |> Array.length) - 1
+        //DependencyGraphCache.Get(key, computeDependencyGraph parsedInputs tcConfig (Graph.subGraphFor lastFileIndex))
+        DependencyGraphCache.Get(key, computeDependencyGraph parsedInputs tcConfig (removeImplFilesThatHaveSignaturesExceptLastOne priorSnapshot))
 
     let ComputeDependencyGraphForProject (projectSnapshot: FSharpProjectSnapshot) parsedInputs (tcConfig: TcConfig) =
         let key = projectSnapshot.SourceFiles.Key(), DependencyGraphType.Project
+        //DependencyGraphCache.Get(key, computeDependencyGraph parsedInputs tcConfig (removeImplFilesThatHaveSignatures projectSnapshot))
         DependencyGraphCache.Get(key, computeDependencyGraph parsedInputs tcConfig id)
 
     let ComputeTcIntermediate
@@ -916,12 +950,12 @@ type internal TransparentCompiler
         (prevTcInfo: TcInfo)
         =
 
-        let dependencyFiles = dependencyGraph |> Graph.subGraphFor fileIndex |> Graph.nodes
+        //let dependencyFiles = dependencyGraph |> Graph.subGraphFor fileIndex |> Graph.nodes
         ignore dependencyGraph
 
         TcIntermediateCache.Get(
-            projectSnapshot.OnlyWith(dependencyFiles).Key,
-            //projectSnapshot.UpTo(fileIndex).Key,
+            //projectSnapshot.OnlyWith(dependencyFiles).Key,
+            projectSnapshot.UpTo(fileIndex).Key,
             node {
                 let input = parsedInput
                 let fileName = input.FileName
@@ -970,7 +1004,7 @@ type internal TransparentCompiler
                          TcResultsSink.WithSink sink,
                          prevTcInfo.tcState,
                          input,
-                         false)
+                         true)
                     |> NodeCode.FromCancellable
 
                 //fileChecked.Trigger fileName
@@ -1010,6 +1044,13 @@ type internal TransparentCompiler
                     Finisher(
                         node,
                         (fun tcInfo ->
+                            
+                            if tcInfo.stateContainsNodes |> Set.contains fileNode then
+                                failwith $"Oops!"
+
+                            if tcInfo.stateContainsNodes |> Set.contains (NodeToTypeCheck.ArtificialImplFile (index - 1)) then
+                                failwith $"Oops???"
+
                             let partialResult, tcState = finisher tcInfo.tcState
 
                             let tcEnv, topAttribs, _checkImplFileOpt, ccuSigForFile = partialResult
@@ -1044,6 +1085,12 @@ type internal TransparentCompiler
                     Finisher(
                         fileNode,
                         (fun tcInfo ->
+
+                            if tcInfo.stateContainsNodes |> Set.contains fileNode then
+                                failwith $"Oops!"
+
+                            if tcInfo.stateContainsNodes |> Set.contains (NodeToTypeCheck.PhysicalFile (index + 1)) then
+                                failwith $"Oops!!!"
 
                             let parsedInput, _parseErrors, _ = parsedInputs[index]
                             let prefixPathOpt = None
@@ -1102,7 +1149,7 @@ type internal TransparentCompiler
 
                 let! graph, dependencyFiles =
                     ComputeDependencyGraphForFile priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
-                //ComputeDependencyGraphForProject priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
+                    //ComputeDependencyGraphForProject priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
 
                 let! results, tcInfo =
                     processTypeCheckingGraph

@@ -449,7 +449,7 @@ type public FSharpChecker =
     /// The event may be raised on a background thread.
     member ProjectChecked: IEvent<FSharpProjectOptions>
 
-    member internal CacheEvent: IEvent<string * Internal.Utilities.Collections.JobEventType * obj>
+    member internal CacheEvent: IEvent<string * Internal.Utilities.Collections.JobEvent * obj>
 
     [<Obsolete("Please create an instance of FSharpChecker using FSharpChecker.Create")>]
     static member Instance: FSharpChecker

@@ -10,6 +10,7 @@ type internal Action<'TKey, 'TValue> =
     | GetOrCompute of NodeCode<'TValue> * CancellationToken
     | CancelRequest
     | JobCompleted of 'TValue
+    | JobFailed
 
 type MemoizeRequest<'TKey, 'TValue> = 'TKey * Action<'TKey, 'TValue> * AsyncReplyChannel<NodeCode<'TValue>>
 
@@ -17,20 +18,32 @@ type internal Job<'TValue> =
     | Running of NodeCode<'TValue> * CancellationTokenSource
     | Completed of NodeCode<'TValue>
 
-type internal JobEventType =
+type internal JobEvent =
     | Started
     | Finished
     | Canceled
+    | Evicted
+    | Collected
+    | Weakened
+    | Strengthened
+    | Failed
+
+type internal CacheEvent = 
+    | Evicted
+    | Collected
+    | Weakened
+    | Strengthened
 
 [<StructuralEquality; NoComparison>]
 type internal ValueLink<'T when 'T: not struct> =
     | Strong of 'T
     | Weak of WeakReference<'T>
 
-type internal LruCache<'TKey, 'TValue when 'TKey: equality and 'TValue: not struct>(keepStrongly, ?keepWeakly, ?requiredToKeep) =
+type internal LruCache<'TKey, 'TValue when 'TKey: equality and 'TValue: not struct>(keepStrongly, ?keepWeakly, ?requiredToKeep, ?event) =
 
     let keepWeakly = defaultArg keepWeakly 100
     let requiredToKeep = defaultArg requiredToKeep (fun _ -> false)
+    let event = defaultArg event (fun _ _ -> ())
     
     let dictionary = Dictionary<_, _>()
 
@@ -48,6 +61,7 @@ type internal LruCache<'TKey, 'TValue when 'TKey: equality and 'TValue: not stru
                 | false, _ ->
                     weakList.Remove node
                     dictionary.Remove k |> ignore
+                    event Collected k
                 | _ -> ()
                 removeCollected next
             | _ -> 
@@ -60,8 +74,10 @@ type internal LruCache<'TKey, 'TValue when 'TKey: equality and 'TValue: not stru
             let mutable node = weakList.Last
             while weakList.Count > keepWeakly && node <> null do
                 let previous = node.Previous
+                let key = fst node.Value
                 weakList.Remove node
-                dictionary.Remove (fst node.Value) |> ignore
+                dictionary.Remove key |> ignore
+                event Evicted key
                 node <- previous
 
     let cutStrongListIfTooLong() = 
@@ -74,6 +90,7 @@ type internal LruCache<'TKey, 'TValue when 'TKey: equality and 'TValue: not stru
                 strongList.Remove node
                 node.Value <- k, Weak (WeakReference<_> v)
                 weakList.AddFirst node
+                event Weakened k
             | _key, _ -> failwith "Invalid state, weak reference in strong list"
             node <- previous
         cutWeakListIfTooLong()
@@ -96,7 +113,9 @@ type internal LruCache<'TKey, 'TValue when 'TKey: equality and 'TValue: not stru
             let node: LinkedListNode<_> = dictionary[key]
             match node.Value with
             | _, Strong _ -> strongList.Remove node
-            | _, Weak _ -> weakList.Remove node
+            | _, Weak _ -> 
+                weakList.Remove node
+                event Strengthened key
 
             node.Value <- key, Strong value
             pushNodeToTop node
@@ -120,11 +139,13 @@ type internal LruCache<'TKey, 'TValue when 'TKey: equality and 'TValue: not stru
                 | true, v ->
                     weakList.Remove node
                     let node = pushValueToTop key v
+                    event Strengthened key
                     dictionary[key] <- node
                     Some v
                 | _ ->
                     weakList.Remove node
                     dictionary.Remove key |> ignore
+                    event Collected key
                     None
         | _ -> None
 
@@ -138,23 +159,50 @@ type internal LruCache<'TKey, 'TValue when 'TKey: equality and 'TValue: not stru
             | _, Weak _ -> weakList.Remove node
         | _ -> ()
 
-type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?logEvent: (string -> JobEventType * 'TKey -> unit), ?name: string) =
+type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?keepWeakly, ?logEvent: (string -> JobEvent * 'TKey -> unit), ?name: string) =
 
     let name = defaultArg name "N/A"
-    //let tok = obj ()
 
     let cache =
         LruCache<'TKey, Job<'TValue>>(
-            keepStrongly = 20,
-            keepWeakly = 100,
-            //areSame = (fun (x, y) -> x = y),
-            requiredToKeep =
-                function
-                | Running _ -> true
-                | _ -> false
-        )
+            keepStrongly = defaultArg keepStrongly 6,
+            keepWeakly = defaultArg keepWeakly 5,
+            requiredToKeep = (function Running _ -> true | _ -> false), 
+            event = (function
+                | Evicted -> (fun k -> logEvent |> Option.iter (fun x -> x name (JobEvent.Evicted, k)))
+                | Collected -> (fun k -> logEvent |> Option.iter (fun x -> x name (JobEvent.Collected, k)))
+                | Weakened -> (fun k -> logEvent |> Option.iter (fun x -> x name (JobEvent.Weakened, k)))
+                | Strengthened -> (fun k -> logEvent |> Option.iter (fun x -> x name (JobEvent.Strengthened, k)))))
+
+    //let tok = obj ()
+
+    //let cache =
+    //    MruCache<_, 'TKey, Job<'TValue>>(
+    //        keepStrongly = 3,
+    //        keepMax = 5,
+    //        areSame = (fun (x, y) -> x = y),
+    //        requiredToKeep =
+    //            function
+    //            | Running _ -> true
+    //            | _ -> false
+    //    )
 
     let requestCounts = Dictionary<'TKey, int>()
+    let cancellationRegistrations = Dictionary<_, _>()
+
+    let saveRegistration key registration =
+        cancellationRegistrations[key] <-
+            match cancellationRegistrations.TryGetValue key with
+            | true, registrations -> registration::registrations
+            | _ -> [registration]
+
+    let cancelRegistration key = 
+        match cancellationRegistrations.TryGetValue key with
+        | true, registrations ->
+            for r: CancellationTokenRegistration in registrations do
+                r.Dispose()
+            cancellationRegistrations.Remove key |> ignore
+        | _ -> ()
 
     let incrRequestCount key =
         requestCounts.[key] <-
@@ -185,21 +233,35 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?logEvent: (stri
                         | GetOrCompute _, Some (Completed job) -> replyChannel.Reply job
                         | GetOrCompute (_, ct), Some (Running (job, _)) ->
                             incrRequestCount key
+
+                            ct.Register(fun _ -> 
+                                let _name = name
+                                post key CancelRequest )
+                                |> saveRegistration key 
+
                             replyChannel.Reply job
-                            ct.Register(fun _ -> post key CancelRequest) |> ignore
 
                         | GetOrCompute (computation, ct), None ->
 
                             let cts = new CancellationTokenSource()
 
+                            ct.Register(fun _ -> 
+                                let _name = name
+                                post key CancelRequest) |> saveRegistration key
+                                
                             let startedComputation =
                                 Async.StartAsTask(
                                     Async.AwaitNodeCode(
                                         node {
-                                            log (Started, key)
-                                            let! result = computation
-                                            post key (JobCompleted result)
-                                            return result
+                                            try
+                                                log (Started, key)
+                                                let! result = computation
+                                            
+                                                post key (JobCompleted result)
+                                                return result
+                                            with ex ->
+                                                post key JobFailed
+                                                return raise ex
                                         }
                                     ),
                                     cancellationToken = cts.Token
@@ -211,8 +273,6 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?logEvent: (stri
 
                             incrRequestCount key
 
-                            ct.Register(fun _ -> post key CancelRequest) |> ignore
-
                             replyChannel.Reply job
 
                         | CancelRequest, Some (Running (_, cts)) ->
@@ -223,25 +283,41 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?logEvent: (stri
 
                             else
                                 cts.Cancel()
-                                cache.Remove(key)
+                                //cache.RemoveAnySimilar(tok, key)
+                                cache.Remove key
                                 requestCounts.Remove key |> ignore
                                 log (Canceled, key)
 
                         | CancelRequest, None
                         | CancelRequest, Some (Completed _) -> ()
 
+                        | JobFailed, Some (Running _) ->
+                            cancelRegistration key
+                            cache.Remove key
+                            requestCounts.Remove key |> ignore
+                            log (Failed, key)
+                        | JobFailed, None ->
+                            cancelRegistration key
+
                         | JobCompleted result, Some (Running _)
                         // Job could be evicted from cache while it's running
                         | JobCompleted result, None ->
+                            cancelRegistration key
                             cache.Set(key, (Completed(node.Return result)))
-                            requestCounts.Remove key |> ignore
                             log (Finished, key)
 
-                        | JobCompleted _result, Some (_job) -> failwith "If this happens there's a bug"
+                        | JobFailed, Some (Completed _job) -> 
+                            failwith "Invalid state: Failed Completed job"
+
+                        | JobCompleted _result, Some (Completed _job) -> 
+                            failwith "Invalid state: Double-Completed job"
                     with
                     | :? OperationCanceledException as e ->
                         System.Diagnostics.Trace.TraceError($"AsyncMemoize OperationCanceledException: {e.Message}")
-                    | ex -> System.Diagnostics.Trace.TraceError($"AsyncMemoize Exception: %A{ex}")
+                    | ex -> 
+                        let _requestCounts = requestCounts
+                        System.Diagnostics.Trace.TraceError($"AsyncMemoize Exception: %A{ex}")
+
             })
 
     member _.Get(key, computation) =
@@ -254,3 +330,7 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?logEvent: (stri
 
             return! job
         }
+
+    //member _.Get(key, computation) =
+    //    ignore key
+    //    computation

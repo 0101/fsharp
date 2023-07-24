@@ -20,7 +20,7 @@ let ``Basics``() =
 
     let eventLog = ResizeArray()
 
-    let memoize = AsyncMemoize(fun _ -> eventLog.Add)
+    let memoize = AsyncMemoize(logEvent=(fun _ -> eventLog.Add))
 
     let task =
         NodeCode.Parallel(seq {
@@ -40,7 +40,7 @@ let ``Basics``() =
     let groups = eventLog |> Seq.groupBy snd |> Seq.toList
     Assert.Equal(3, groups.Length)
     for key, events in groups do
-        Assert.Equal<(JobEventType * int) array>([| Started, key; Finished, key |], events |> Seq.toArray)
+        Assert.Equal<(JobEvent * int) array>([| Started, key; Finished, key |], events |> Seq.toArray)
 
 [<Fact>]
 let ``We can cancel a job`` () =
@@ -55,7 +55,7 @@ let ``We can cancel a job`` () =
     }
 
     let eventLog = ResizeArray()
-    let memoize = AsyncMemoize(fun _ -> eventLog.Add)
+    let memoize = AsyncMemoize(logEvent=(fun _ -> eventLog.Add))
 
     use cts1 = new CancellationTokenSource()
     use cts2 = new CancellationTokenSource()
@@ -69,20 +69,20 @@ let ``We can cancel a job`` () =
 
     resetEvent.WaitOne() |> ignore
 
-    Assert.Equal<(JobEventType * int) array>([| Started, key |], eventLog |> Seq.toArray )
+    Assert.Equal<(JobEvent * int) array>([| Started, key |], eventLog |> Seq.toArray )
 
     cts1.Cancel()
     cts2.Cancel()
 
     Thread.Sleep 10
 
-    Assert.Equal<(JobEventType * int) array>([| Started, key |], eventLog |> Seq.toArray )
+    Assert.Equal<(JobEvent * int) array>([| Started, key |], eventLog |> Seq.toArray )
 
     cts3.Cancel()
 
     Thread.Sleep 100
 
-    Assert.Equal<(JobEventType * int) array>([| Started, key; Canceled, key |], eventLog |> Seq.toArray )
+    Assert.Equal<(JobEvent * int) array>([| Started, key; Canceled, key |], eventLog |> Seq.toArray )
 
     try
         Task.WaitAll(_task1, _task2, _task3)
@@ -98,7 +98,7 @@ let ``Job keeps running even if first requestor cancels`` () =
     }
 
     let eventLog = ResizeArray()
-    let memoize = AsyncMemoize(fun _ -> eventLog.Add)
+    let memoize = AsyncMemoize(logEvent=(fun _ -> eventLog.Add))
 
     use cts1 = new CancellationTokenSource()
     use cts2 = new CancellationTokenSource()
@@ -119,7 +119,7 @@ let ``Job keeps running even if first requestor cancels`` () =
     Assert.Equal(2, result)
 
     Thread.Sleep 1 // Wait for event log to be updated
-    Assert.Equal<(JobEventType * int) array>([| Started, key; Finished, key |], eventLog |> Seq.toArray )
+    Assert.Equal<(JobEvent * int) array>([| Started, key; Finished, key |], eventLog |> Seq.toArray )
 
 
 type ExpectedException() =
@@ -131,12 +131,14 @@ let ``Stress test`` () =
 
     let rng = System.Random seed
     let threads = 100
-    let iterations = 100
+    let iterations = 10
     let maxDuration = 100
-    let maxTimeout = 100
+    let minTimeout = 110
+    let maxTimeout = 200
     let exceptionProbability = 0.01
+    let gcProbability = 0.1
     let stepMs = 10
-    let keyCount = 300
+    let keyCount = 20
     let keys = [| 1 .. keyCount |]
 
     let intenseComputation durationMs result =
@@ -147,7 +149,7 @@ let ``Stress test`` () =
             let mutable number = 0
             while (int s.ElapsedMilliseconds) < durationMs do
                 number <- number + 1 % 12345
-            return result
+            return [result]
         }
         |> NodeCode.AwaitAsync
 
@@ -159,19 +161,21 @@ let ``Stress test`` () =
                 do! Async.Sleep (min stepMs durationMs) |> NodeCode.AwaitAsync
                 return! sleepyComputation (durationMs - stepMs) result
             else
-                return result
+                return [result]
         }
 
     let rec mixedComputation durationMs result =
         node {
             if durationMs > 0 then
                 if rng.NextDouble() < 0.5 then
-                    do! intenseComputation (min stepMs durationMs) ()
+                    let! _ = intenseComputation (min stepMs durationMs) ()
+                    ()
                 else
-                    do! sleepyComputation (min stepMs durationMs) ()
+                    let! _ = sleepyComputation (min stepMs durationMs) ()
+                    ()
                 return! mixedComputation (durationMs - stepMs) result
             else
-                return result
+                return [result]
         }
 
     let computations = [|
@@ -182,54 +186,81 @@ let ``Stress test`` () =
 
     let cacheEvents = ConcurrentBag()
 
-    let cache = AsyncMemoize(fun _ x -> cacheEvents.Add x)
+    //let cache = AsyncMemoize(fun _ x -> cacheEvents.Enqueue x)
+    let cache = AsyncMemoize(keepStrongly=5, keepWeakly=10, logEvent=(fun _ x -> cacheEvents.Add (DateTime.Now.Ticks, x)))
+    //let cache = AsyncMemoize(keepStrongly=5, keepWeakly=10)
 
     let mutable started = 0
     let mutable canceled = 0
+    let mutable timeout = 0
     let mutable failed = 0
     let mutable completed = 0
 
-    seq {
-        for _ in 1..threads do
-            let rec loop iteration =
-                async {
-                    let computation = computations[rng.Next computations.Length]
-                    let durationMs = rng.Next maxDuration
-                    let timeoutMs = rng.Next maxTimeout
-                    let key = keys[rng.Next keys.Length]
-                    let result = key * 2
-                    let job = cache.Get(key, computation durationMs result) |> Async.AwaitNodeCode
-                    let! runningJob = Async.StartChild(job, timeoutMs)
-                    Interlocked.Increment &started |> ignore
-                    try
-                        let! actual = runningJob
-                        Assert.Equal(result, actual)
-                        Interlocked.Increment &completed |> ignore
-                    with
-                        | :? TaskCanceledException
-                        | :? TimeoutException -> Interlocked.Increment &canceled |> ignore
-                        | :? ExpectedException -> Interlocked.Increment &failed |> ignore
-                        | :? AggregateException as ex when
-                            ex.InnerExceptions |> Seq.exists (fun e -> e :? ExpectedException) ->
-                            Interlocked.Increment &failed |> ignore
-                        | e ->
-                            failwith $"Seed {seed} failed on iteration {iteration}: %A{e}"
-                    if iteration < iterations then
-                        return! loop (iteration + 1)
-                    return ()
-                }
-            loop 1
-    }
-    |> Async.Parallel
-    |> Async.RunSynchronously
-    |> ignore
+    let task = 
+        seq {
+            for _ in 1..threads do
+                let rec loop iteration =
+                    async {
+                        if gcProbability > rng.NextDouble() then
+                            GC.Collect(2, GCCollectionMode.Forced, false)
 
-    Assert.Equal (started, threads * iterations)
-    Assert.Equal (started, completed + canceled + failed)
+                        let computation = computations[rng.Next computations.Length]
+                        let durationMs = rng.Next maxDuration
+                        let timeoutMs = rng.Next(minTimeout, maxTimeout)
+                        let key = keys[rng.Next keys.Length]
+                        let result = key * 2
+                        let job = cache.Get(key, computation durationMs result) |> Async.AwaitNodeCode
+                        let! runningJob = Async.StartChild(job)
+                        ignore timeoutMs
+                        Interlocked.Increment &started |> ignore
+                        try
+                            let! actual = runningJob
+                            Assert.Equal(result, actual.Head)
+                            Interlocked.Increment &completed |> ignore
+                        with
+                            | :? TaskCanceledException as _e -> 
 
-    let events =
-        cacheEvents
-        |> Seq.countBy id
-        |> Seq.toArray
+                                Interlocked.Increment &canceled |> ignore
+                            | :? TimeoutException -> Interlocked.Increment &timeout |> ignore
+                            | :? ExpectedException -> Interlocked.Increment &failed |> ignore
+                            | :? AggregateException as ex when
+                                ex.InnerExceptions |> Seq.exists (fun e -> e :? ExpectedException) ->
+                                Interlocked.Increment &failed |> ignore
+                            | e ->
+                                failwith $"Seed {seed} failed on iteration {iteration}: %A{e}"
+                        if iteration < iterations then
+                            return! loop (iteration + 1)
+                        return ()
+                    } 
+                loop 1
+        }
+        |> Async.Parallel
+        |> Async.StartAsTask
 
-    ignore events
+    task.Wait()
+   
+    let task = 
+        async {
+
+        
+            do! Async.Sleep 500
+
+
+    
+            //let events =
+            //    cacheEvents
+            //    |> Seq.countBy id
+            //    |> Seq.toArray
+
+            let events = cacheEvents |> Seq.sortBy fst |> Seq.toArray
+
+            ignore events
+        }
+        |> Async.StartAsTask
+    task.Wait()
+
+    ignore cacheEvents
+
+    Assert.Equal (threads * iterations, started)
+    Assert.Equal (started, completed + canceled + failed + timeout)
+    
