@@ -557,13 +557,16 @@ let GiraffeFuzzing signatureFiles =
 
     let getRandomItem (xs: 'x array) = xs[rng.Next(0, xs.Length)]
 
-    let checkingThreads = 1
+    let checkingThreads = 4
     let maxModificationDelayMs = 10
     let maxCheckingDelayMs = 20
     //let runTimeMs = 30000
     let signatureFileModificationProbability = 0.25
     let modificationLoopIterations = 100
-    let checkingLoopIterations = 20
+    let checkingLoopIterations = 30
+
+    let minCheckingTimeoutMs = 10
+    let maxCheckingTimeoutMs = 300
 
     let giraffe = if signatureFiles then "giraffe-signatures" else "Giraffe"
     let giraffeDir = __SOURCE_DIRECTORY__ ++ ".." ++ ".." ++ ".." ++ ".." ++ giraffe ++ "src" ++ "Giraffe"
@@ -660,7 +663,8 @@ let GiraffeFuzzing signatureFiles =
 
     let addCacheEvent (name, jobEvent, key)= 
         //System.Diagnostics.Trace.TraceInformation $"{DateTime.Now.Ticks}| {name} {jobEvent} {key}"
-        log.Value.Add (DateTime.Now.Ticks, $"{name} {jobEvent} {key}")
+        if name = "TcIntermediate" then
+            log.Value.Add (DateTime.Now.Ticks, $"{jobEvent} {key}")
 
     checker.CacheEvent.Add addCacheEvent
 
@@ -669,12 +673,16 @@ let GiraffeFuzzing signatureFiles =
             let! project = getProject()
             let p, file = project |> getRandomFile
 
+            let timeout = rng.Next(minCheckingTimeoutMs, maxCheckingTimeoutMs)
             // TODO: timeout & cancelation
-            log.Value.Add (DateTime.Now.Ticks, $"#{n} Started checking {file.Id}")
-            let! result = checker |> checkFile file.Id p
-
-            log.Value.Add (DateTime.Now.Ticks, $"#{n} Checked {file.Id} %A{snd result}")
-            expectOk result ()
+            log.Value.Add (DateTime.Now.Ticks, $"#{n} Started checking {file.Id} ({timeout} ms timeout)")
+            let! job = Async.StartChild(checker |> checkFile file.Id p, timeout)
+            try 
+                let! result = job
+                log.Value.Add (DateTime.Now.Ticks, $"#{n} Checked {file.Id} %A{snd result}")
+                expectOk result ()
+            with ex ->
+                log.Value.Add (DateTime.Now.Ticks, $"#{n} Aborted check of {file.Id} %A{ex}")
 
             do! Async.Sleep (rng.Next maxCheckingDelayMs)
     }
@@ -692,7 +700,6 @@ let GiraffeFuzzing signatureFiles =
             do! threads |> Seq.skip 1 |> Async.Parallel |> Async.Ignore
         with
             | e -> 
-                let _x = log.Values
                 let _log = log.Values |> Seq.collect id |> Seq.sortBy fst |> Seq.toArray
                 failwith $"Seed: {seed}\nException: %A{e}"
     } |> Async.RunSynchronously

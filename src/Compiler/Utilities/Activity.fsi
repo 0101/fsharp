@@ -2,6 +2,7 @@
 
 namespace FSharp.Compiler.Diagnostics
 
+
 open System
 
 /// For activities following the dotnet distributed tracing concept

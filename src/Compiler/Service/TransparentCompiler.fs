@@ -284,7 +284,7 @@ type internal TransparentCompiler
 
     let TcFileCache = AsyncMemoize(logEvent=triggerCacheEvent, name="TcPrior")
 
-    let TcIntermediateCache = AsyncMemoize(logEvent=triggerCacheEvent, name="TcIntermediate")
+    let TcIntermediateCache = AsyncMemoize(keepStrongly=1000, keepWeakly=2000, logEvent=triggerCacheEvent, name="TcIntermediate")
 
     let DependencyGraphCache = AsyncMemoize(logEvent=triggerCacheEvent, name="DependencyGraph")
 

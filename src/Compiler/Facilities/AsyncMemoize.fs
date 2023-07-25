@@ -165,8 +165,8 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
 
     let cache =
         LruCache<'TKey, Job<'TValue>>(
-            keepStrongly = defaultArg keepStrongly 6,
-            keepWeakly = defaultArg keepWeakly 5,
+            keepStrongly = defaultArg keepStrongly 20,
+            keepWeakly = defaultArg keepWeakly 100,
             requiredToKeep = (function Running _ -> true | _ -> false), 
             event = (function
                 | Evicted -> (fun k -> logEvent |> Option.iter (fun x -> x name (JobEvent.Evicted, k)))
