@@ -14,6 +14,7 @@ open System.IO
 open Microsoft.CodeAnalysis
 open System
 open System.Threading.Tasks
+open System.Threading
 
 
 [<Fact>]
@@ -229,8 +230,8 @@ let ``File is not checked twice`` () =
         |> Seq.map (fun (k, g) -> k, g |> Seq.map snd |> Seq.toList)
         |> Map
 
-    Assert.Equal<JobEventType list>([Started; Finished], intermediateTypeChecks["FileFirst.fs"])
-    Assert.Equal<JobEventType list>([Started; Finished], intermediateTypeChecks["FileThird.fs"])
+    Assert.Equal<JobEvent list>([Started; Finished], intermediateTypeChecks["FileFirst.fs"])
+    Assert.Equal<JobEvent list>([Started; Finished], intermediateTypeChecks["FileThird.fs"])
 
 [<Fact>]
 let ``We don't check files that are not depended on`` () =
@@ -261,8 +262,8 @@ let ``We don't check files that are not depended on`` () =
         |> Seq.map (fun (k, g) -> k, g |> Seq.map snd |> Seq.toList)
         |> Map
 
-    Assert.Equal<JobEventType list>([Started; Finished], intermediateTypeChecks["FileFirst.fs"])
-    Assert.Equal<JobEventType list>([Started; Finished], intermediateTypeChecks["FileThird.fs"])
+    Assert.Equal<JobEvent list>([Started; Finished], intermediateTypeChecks["FileFirst.fs"])
+    Assert.Equal<JobEvent list>([Started; Finished], intermediateTypeChecks["FileThird.fs"])
     Assert.False (intermediateTypeChecks.ContainsKey "FileSecond.fs")
 
 [<Fact>]
@@ -305,9 +306,9 @@ let ``Files that are not depended on don't invalidate cache`` () =
         |> Seq.map (fun (k, g) -> k, g |> Seq.map snd |> Seq.toList)
         |> Map
 
-    Assert.Equal<JobEventType list>([Started; Finished], graphConstructions["FileLast.fs"])
+    Assert.Equal<JobEvent list>([Started; Finished], graphConstructions["FileLast.fs"])
 
-    Assert.Equal<string * JobEventType list>([], intermediateTypeChecks |> Map.toList)
+    Assert.Equal<string * JobEvent list>([], intermediateTypeChecks |> Map.toList)
 
 [<Fact>]
 let ``Files that are not depended on don't invalidate cache part 2`` () =
@@ -350,8 +351,8 @@ let ``Files that are not depended on don't invalidate cache part 2`` () =
         |> Seq.map (fun (k, g) -> k, g |> Seq.map snd |> Seq.toList)
         |> Seq.toList
 
-    Assert.Equal<string * JobEventType list>(["FileE.fs", [Started; Finished]], graphConstructions)
-    Assert.Equal<string * JobEventType list>(["FileE.fs", [Started; Finished]], intermediateTypeChecks)
+    Assert.Equal<string * JobEvent list>(["FileE.fs", [Started; Finished]], graphConstructions)
+    Assert.Equal<string * JobEvent list>(["FileE.fs", [Started; Finished]], intermediateTypeChecks)
 
 
 [<Theory>]
@@ -546,23 +547,26 @@ let Fuzzing signatureFiles =
     builder.DeleteProjectDir()
 
 
-//[<Theory>]
-//[<InlineData true>]
-//[<InlineData false>]
+[<Theory>]
+[<InlineData true>]
+[<InlineData false>]
 let GiraffeFuzzing signatureFiles =
-    let seed = System.Random().Next()
-    //let seed = 1514219769
+    //let seed = System.Random().Next()
+    let seed = 1044159179
     let rng = System.Random(int seed)
 
     let getRandomItem (xs: 'x array) = xs[rng.Next(0, xs.Length)]
 
-    let checkingThreads = 16
-    let maxModificationDelayMs = 20
-    let maxCheckingDelayMs = 40
+    let checkingThreads = 4
+    let maxModificationDelayMs = 10
+    let maxCheckingDelayMs = 20
     //let runTimeMs = 30000
     let signatureFileModificationProbability = 0.25
     let modificationLoopIterations = 100
-    let checkingLoopIterations = 50
+    let checkingLoopIterations = 30
+
+    let minCheckingTimeoutMs = 10
+    let maxCheckingTimeoutMs = 300
 
     let giraffe = if signatureFiles then "giraffe-signatures" else "Giraffe"
     let giraffeDir = __SOURCE_DIRECTORY__ ++ ".." ++ ".." ++ ".." ++ ".." ++ giraffe ++ "src" ++ "Giraffe"
@@ -630,7 +634,7 @@ let GiraffeFuzzing signatureFiles =
 
     let getRandomFile (project: SyntheticProject) = project.GetAllFiles() |> List.toArray |> getRandomItem
 
-    let log = ConcurrentBag()
+    let log = new ThreadLocal<_>((fun () -> ResizeArray<_>()), true)
 
     let modificationLoop = async {
         for _ in 1 .. modificationLoopIterations do
@@ -647,7 +651,7 @@ let GiraffeFuzzing signatureFiles =
                             if file.HasSignatureFile && rng.NextDouble() < signatureFileModificationProbability 
                             then nameof modifySigFile, modifySigFile
                             else nameof modifyImplFile, modifyImplFile
-                        log.Add $"{DateTime.Now.ToShortTimeString()}| {project.Name} -> {fileId} |> {opName}"
+                        log.Value.Add (DateTime.Now.Ticks, $"{project.Name} -> {fileId} |> {opName}")
                         p |> updateFileInAnyProject fileId f)
                 | Add
                 | Remove ->
@@ -656,17 +660,29 @@ let GiraffeFuzzing signatureFiles =
             do! modifyProject modify
     }
 
+
+    let addCacheEvent (name, jobEvent, key)= 
+        //System.Diagnostics.Trace.TraceInformation $"{DateTime.Now.Ticks}| {name} {jobEvent} {key}"
+        if name = "TcIntermediate" then
+            log.Value.Add (DateTime.Now.Ticks, $"{jobEvent} {key}")
+
+    checker.CacheEvent.Add addCacheEvent
+
     let checkingLoop n = async {
         for _ in 1 .. checkingLoopIterations do
             let! project = getProject()
             let p, file = project |> getRandomFile
 
+            let timeout = rng.Next(minCheckingTimeoutMs, maxCheckingTimeoutMs)
             // TODO: timeout & cancelation
-            log.Add $"{DateTime.Now.ToShortTimeString()}| #{n} Started checking {file.Id}"
-            let! result = checker |> checkFile file.Id p
-
-            log.Add $"{DateTime.Now.ToShortTimeString()}| #{n} Checked {file.Id} %A{snd result}"
-            expectOk result ()
+            log.Value.Add (DateTime.Now.Ticks, $"#{n} Started checking {file.Id} ({timeout} ms timeout)")
+            let! job = Async.StartChild(checker |> checkFile file.Id p, timeout)
+            try 
+                let! result = job
+                log.Value.Add (DateTime.Now.Ticks, $"#{n} Checked {file.Id} %A{snd result}")
+                expectOk result ()
+            with ex ->
+                log.Value.Add (DateTime.Now.Ticks, $"#{n} Aborted check of {file.Id} %A{ex}")
 
             do! Async.Sleep (rng.Next maxCheckingDelayMs)
     }
@@ -683,7 +699,9 @@ let GiraffeFuzzing signatureFiles =
         try
             do! threads |> Seq.skip 1 |> Async.Parallel |> Async.Ignore
         with
-            | e -> failwith $"Seed: {seed}\nException: %A{e}"
+            | e -> 
+                let _log = log.Values |> Seq.collect id |> Seq.sortBy fst |> Seq.toArray
+                failwith $"Seed: {seed}\nException: %A{e}"
     } |> Async.RunSynchronously
 
     builder.DeleteProjectDir()

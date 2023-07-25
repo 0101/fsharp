@@ -120,6 +120,7 @@ type DelayedILModuleReader =
 type FSharpFileKey = string * string
 
 // TODO: use stamp if we have it?
+[<DebuggerDisplay("{DebuggerDisplay}")>]
 type FSharpProjectSnapshotKey =
     {
         ProjectFileName: string
@@ -133,6 +134,12 @@ type FSharpProjectSnapshotKey =
     }
 
     member this.LastFile = this.SourceFiles |> List.last
+
+    member this.DebuggerDisplay =
+        let path, version = this.LastFile
+        $"{Path.GetFileNameWithoutExtension this.ProjectFileName} {Path.GetFileName path} {version}"
+
+    override this.ToString() = this.DebuggerDisplay
 
 [<NoComparison; CustomEquality>]
 type FSharpFileSnapshot =
