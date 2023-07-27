@@ -12,7 +12,8 @@ type internal Action<'TKey, 'TValue> =
     | CancelRequest
     | OriginatorCanceled
     | JobCompleted of 'TValue
-    | JobFailed
+    | JobFailed of exn
+    | Sync
 
 type MemoizeRequest<'TKey, 'TValue> = 'TKey * Action<'TKey, 'TValue> * AsyncReplyChannel<NodeCode<'TValue>>
 
@@ -234,7 +235,15 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
 
                         let! key, action, replyChannel = inbox.Receive()
 
-                        match action, cache.TryGet(key) with
+                        let cached = 
+                            match action with 
+                            | Sync -> None 
+                            | _ -> cache.TryGet(key) 
+
+                        //System.Diagnostics.Trace.TraceInformation $"{key} {action} {cached}"
+
+                        match action, cached with
+                        | Sync, _ -> replyChannel.Reply (node.Return Unchecked.defaultof<_>)
                         | GetOrCompute _, Some (Completed result) -> replyChannel.Reply (node.Return result)
                         | GetOrCompute (_, ct), Some (Running (tcs, _, _)) ->
                             incrRequestCount key
@@ -246,15 +255,15 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
 
                             replyChannel.Reply (tcs.Task |> NodeCode.AwaitTask)
 
-                        | GetOrCompute (computation, _ct), None ->
+                        | GetOrCompute (computation, ct), None ->
 
                             let cts = new CancellationTokenSource()
 
-                            // This will be handled by try-with
-                            //ct.Register(fun _ ->
-                            //    let _name = name
-                            //    post key CancelRequest)
-                            //    |> saveRegistration key
+                            //???? This will be handled by try-with
+                            ct.Register(fun _ ->
+                                let _name = name
+                                post key OriginatorCanceled)
+                                |> saveRegistration key
 
                             let tcs = TaskCompletionSource()
 
@@ -271,7 +280,7 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
                                         post key OriginatorCanceled
                                         return raise ex
                                     | ex ->
-                                        post key JobFailed
+                                        post key (JobFailed ex)
                                         return raise ex
                                 }
 
@@ -285,6 +294,7 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
                             decrRequestCount key
 
                             if requestCounts[key] < 1 then
+                                cts.Cancel()
                                 cache.Remove key
                                 requestCounts.Remove key |> ignore
                                 log (Canceled, key)
@@ -295,10 +305,12 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
                                     |> Async.AwaitNodeCode
                                     |> Async.Ignore, // Ignore the result, which will be delivered via the TaskCompletionSource from within wrappedComputation
                                     cts.Token)
+                        | OriginatorCanceled, None -> 
+                            ()
 
-                        | OriginatorCanceled, None -> () // Shouldn't happen, unless we allow evicting Running jobs from cache
+                         // Shouldn't happen, unless we allow evicting Running jobs from cache
 
-                        | CancelRequest, Some (Running (_tcs, cts, _wrappedComputation)) ->
+                        | CancelRequest, Some (Running (_tcs, cts, _c)) ->
                             decrRequestCount key
 
                             if requestCounts[key] < 1 then
@@ -311,25 +323,28 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
                         | CancelRequest, None
                         | CancelRequest, Some (Completed _) -> ()
 
-                        | JobFailed, Some (Running _) ->
+                        | JobFailed ex, Some (Running (tcs, _cts, _c)) ->
                             // TODO: should we restart if there are more requests?
                             cancelRegistration key
                             cache.Remove key
                             requestCounts.Remove key |> ignore
                             log (Failed, key)
+                            tcs.TrySetException ex |> ignore
 
-                        | JobFailed, None ->
-                            cancelRegistration key
-
-                        | JobCompleted result, Some (Running _)
-                        // Job could be evicted from cache while it's running
-                        | JobCompleted result, None ->
+                        | JobCompleted result, Some (Running (tcs, _cts, _c)) ->
                             cancelRegistration key
                             cache.Set(key, (Completed result))
                             log (Finished, key)
+                            tcs.SetResult result
 
-                        | JobFailed, Some (Completed _job) ->
-                            failwith "Invalid state: Failed Completed job"
+                        // Job can't be evicted from cache while it's running because then subsequent requestors would be waiting forever
+                        | JobFailed _, None
+                        //| OriginatorCanceled, None 
+                        | JobCompleted _, None ->
+                            failwith "Invalid state: Running job missing in cache"
+
+                        | JobFailed ex, Some (Completed _job) ->
+                            failwith $"Invalid state: Failed Completed job \n%A{ex}"
 
                         | JobCompleted _result, Some (Completed _job) ->
                             failwith "Invalid state: Double-Completed job"
@@ -346,17 +361,20 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
 
             })
 
-    member _.Get(key, computation) =
-        node {
-            let! ct = NodeCode.CancellationToken
-
-            let! job =
-                agent.PostAndAsyncReply(fun rc -> key, (GetOrCompute(computation, ct)), rc)
-                |> NodeCode.AwaitAsync
-
-            return! job
-        }
-
     //member _.Get(key, computation) =
-    //    ignore key
-    //    computation
+    //    node {
+    //        let! ct = NodeCode.CancellationToken
+
+    //        let! job =
+    //            agent.PostAndAsyncReply(fun rc -> key, (GetOrCompute(computation, ct)), rc)
+    //            |> NodeCode.AwaitAsync
+
+    //        return! job
+    //    }
+
+    member _.Get(key, computation) =
+        ignore key
+        computation
+
+    member _.Sync() =
+        agent.PostAndAsyncReply(fun rc -> Unchecked.defaultof<_>, (Sync), rc) |> Async.Ignore
