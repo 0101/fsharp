@@ -151,6 +151,8 @@ type FSharpFileSnapshot =
 
     member this.Key = this.FileName, this.Version
 
+    member this.IsSignatureFile = this.FileName.ToLower().EndsWith(".fsi")
+
     override this.Equals(o) =
         match o with
         | :? FSharpFileSnapshot as o -> o.FileName = this.FileName && o.Version = this.Version
@@ -225,6 +227,28 @@ type FSharpProjectSnapshot =
                 |> List.sort
                 |> List.choose (fun x -> this.SourceFiles |> List.tryItem x)
         }
+
+    member this.WithoutImplFilesThatHaveSignatures =
+        let files =
+            (([], Set.empty), this.SourceFiles)
+            ||> Seq.fold (fun (res, sigs) file ->
+                if file.IsSignatureFile then
+                    file::res, sigs |> Set.add file.FileName
+                else
+                    let sigFileName = $"{file.FileName}i"
+                    if sigs.Contains sigFileName then res, sigs |> Set.remove sigFileName
+                    else file::res, sigs)
+            |> fst
+            |> List.rev
+        { this with SourceFiles = files }
+
+    member this.WithoutImplFilesThatHaveSignaturesExceptLastOne =
+        let lastFile = this.SourceFiles |> List.last
+        if lastFile.IsSignatureFile then
+            this.WithoutImplFilesThatHaveSignatures
+        else
+            let snapshot = this.WithoutImplFilesThatHaveSignatures
+            { snapshot with SourceFiles = snapshot.SourceFiles @ [lastFile] }
 
     member this.Key =
         {

@@ -955,7 +955,7 @@ type internal TransparentCompiler
 
         TcIntermediateCache.Get(
             //projectSnapshot.OnlyWith(dependencyFiles).Key,
-            projectSnapshot.UpTo(fileIndex).Key,
+            projectSnapshot.UpTo(fileIndex).WithoutImplFilesThatHaveSignaturesExceptLastOne.Key,
             node {
                 let input = parsedInput
                 let fileName = input.FileName
@@ -1044,7 +1044,7 @@ type internal TransparentCompiler
                     Finisher(
                         node,
                         (fun tcInfo ->
-                            
+
                             if tcInfo.stateContainsNodes |> Set.contains fileNode then
                                 failwith $"Oops!"
 
@@ -1130,7 +1130,7 @@ type internal TransparentCompiler
     let ComputeTcFile (file: FSharpFile) (bootstrapInfo: BootstrapInfo) (projectSnapshot: FSharpProjectSnapshot) =
 
         let priorSnapshot = projectSnapshot.UpTo file.Source.FileName
-        let key = priorSnapshot.Key
+        let key = priorSnapshot.WithoutImplFilesThatHaveSignaturesExceptLastOne.Key
 
         TcFileCache.Get(
             key,
@@ -1403,7 +1403,7 @@ type internal TransparentCompiler
 
     let ComputeGetAssemblyData (projectSnapshot: FSharpProjectSnapshot) =
         AssemblyDataCache.Get(
-            projectSnapshot.Key,
+            projectSnapshot.WithoutImplFilesThatHaveSignatures.Key,
             node {
                 match! ComputeBootstrapInfo projectSnapshot with
                 | None, _ -> return ProjectAssemblyDataResult.Unavailable true

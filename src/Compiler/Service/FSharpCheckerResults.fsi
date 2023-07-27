@@ -130,6 +130,10 @@ type FSharpProjectSnapshot =
     /// A snapshot of the same project but only with source files specified by given indexes.
     member OnlyWith: fileIndexes: Set<FileIndex> -> FSharpProjectSnapshot
 
+    member WithoutImplFilesThatHaveSignatures: FSharpProjectSnapshot
+
+    member WithoutImplFilesThatHaveSignaturesExceptLastOne: FSharpProjectSnapshot
+
     /// A snapshot of the same project with file versions removed.
     member WithoutFileVersions: FSharpProjectSnapshot
 
