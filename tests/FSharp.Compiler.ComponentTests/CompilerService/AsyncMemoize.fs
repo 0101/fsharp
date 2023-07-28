@@ -12,29 +12,68 @@ open System.Collections.Concurrent
 
 
 [<Fact>]
-let ``Stack trace`` () =
+let ``Stack trace`` () = task {
 
     let eventLog = ResizeArray()
 
     let memoize = AsyncMemoize(logEvent=(fun _ -> eventLog.Add))
 
     let computation key = node {
-        do! Async.Sleep 1 |> NodeCode.AwaitAsync
+       // do! Async.Sleep 1 |> NodeCode.AwaitAsync
         
         let! result = memoize.Get(key * 2, node {
-            do! Async.Sleep 1 |> NodeCode.AwaitAsync
+            //do! Async.Sleep 1 |> NodeCode.AwaitAsync
             return key * 5
         })
         
         return result * 2
     }
 
-    let task = memoize.Get(1, computation 1) |> NodeCode.StartAsTask_ForTesting 
-    let rsult = task.Result
+    //let _r2 = computation 10
+
+    let! result = memoize.Get(1, computation 1) |> Async.AwaitNodeCode
+    
+
+    Assert.Equal(10, result)
+}
+
+[<Fact>]
+let ``Stack trace node`` () = task {
+
+    let computation key = node {
+        //do! Async.Sleep 1 |> NodeCode.AwaitAsync
+        
+        let! result = node {
+            //do! Async.Sleep 1 |> NodeCode.AwaitAsync
+            return key * 5
+        }
+        
+        return result * 2
+    }
+
+    let! rsult = computation 1 |> Async.AwaitNodeCode
 
     Assert.Equal(10, rsult)
+}
 
+[<Fact>]
+let ``Stack trace task`` () = task {
 
+    let computation key = task {
+        //do! Task.Delay 1
+
+        let! result = task {
+            //do! Task.Delay 1
+            return key * 5
+        }
+
+        return result * 2
+    }
+
+    let! rsult = computation 1
+
+    Assert.Equal(10, rsult)
+}
 
 [<Fact>]
 let ``Basics``() =
@@ -164,77 +203,77 @@ type ExpectedException() =
 
 [<Fact>]
 let ``Stress test`` () =
-    task {
-        let seed = System.Random().Next()
 
-        let rng = System.Random seed
-        let threads = 30
-        let iterations = 30
-        let maxDuration = 100
-        let minTimeout = 0
-        let maxTimeout = 1000
-        let exceptionProbability = 0.01
-        let gcProbability = 0.1
-        let stepMs = 10
-        let keyCount = 20
-        let keys = [| 1 .. keyCount |]
+    let seed = System.Random().Next()
 
-        let intenseComputation durationMs result =
-            async {
-                if rng.NextDouble() < exceptionProbability then
-                    raise (ExpectedException())
-                let s = Stopwatch.StartNew()
-                let mutable number = 0
-                while (int s.ElapsedMilliseconds) < durationMs do
-                    number <- number + 1 % 12345
+    let rng = System.Random seed
+    let threads = 30
+    let iterations = 100
+    let maxDuration = 100
+    let minTimeout = 0
+    let maxTimeout = 1000
+    let exceptionProbability = 0.01
+    let gcProbability = 0.1
+    let stepMs = 10
+    let keyCount = 20
+    let keys = [| 1 .. keyCount |]
+
+    let intenseComputation durationMs result =
+        async {
+            if rng.NextDouble() < exceptionProbability then
+                raise (ExpectedException())
+            let s = Stopwatch.StartNew()
+            let mutable number = 0
+            while (int s.ElapsedMilliseconds) < durationMs do
+                number <- number + 1 % 12345
+            return [result]
+        }
+        |> NodeCode.AwaitAsync
+
+    let rec sleepyComputation durationMs result =
+        node {
+            if rng.NextDouble() < (exceptionProbability / (float durationMs / float stepMs)) then
+                raise (ExpectedException())
+            if durationMs > 0 then
+                do! Async.Sleep (min stepMs durationMs) |> NodeCode.AwaitAsync
+                return! sleepyComputation (durationMs - stepMs) result
+            else
                 return [result]
-            }
-            |> NodeCode.AwaitAsync
+        }
 
-        let rec sleepyComputation durationMs result =
-            node {
-                if rng.NextDouble() < (exceptionProbability / (float durationMs / float stepMs)) then
-                    raise (ExpectedException())
-                if durationMs > 0 then
-                    do! Async.Sleep (min stepMs durationMs) |> NodeCode.AwaitAsync
-                    return! sleepyComputation (durationMs - stepMs) result
+    let rec mixedComputation durationMs result =
+        node {
+            if durationMs > 0 then
+                if rng.NextDouble() < 0.5 then
+                    let! _ = intenseComputation (min stepMs durationMs) ()
+                    ()
                 else
-                    return [result]
-            }
+                    let! _ = sleepyComputation (min stepMs durationMs) ()
+                    ()
+                return! mixedComputation (durationMs - stepMs) result
+            else
+                return [result]
+        }
 
-        let rec mixedComputation durationMs result =
-            node {
-                if durationMs > 0 then
-                    if rng.NextDouble() < 0.5 then
-                        let! _ = intenseComputation (min stepMs durationMs) ()
-                        ()
-                    else
-                        let! _ = sleepyComputation (min stepMs durationMs) ()
-                        ()
-                    return! mixedComputation (durationMs - stepMs) result
-                else
-                    return [result]
-            }
+    let computations = [|
+        intenseComputation
+        sleepyComputation
+        mixedComputation
+    |]
 
-        let computations = [|
-            intenseComputation
-            sleepyComputation
-            mixedComputation
-        |]
+    let _cacheEvents = ConcurrentBag()
 
-        let _cacheEvents = ConcurrentBag()
+    //let cache = AsyncMemoize(fun _ x -> cacheEvents.Enqueue x)
+    //let cache = AsyncMemoize(keepStrongly=5, keepWeakly=10, logEvent=(fun _ x -> cacheEvents.Add (DateTime.Now.Ticks, x)))
+    let cache = AsyncMemoize(keepStrongly=5, keepWeakly=10)
 
-        //let cache = AsyncMemoize(fun _ x -> cacheEvents.Enqueue x)
-        //let cache = AsyncMemoize(keepStrongly=5, keepWeakly=10, logEvent=(fun _ x -> cacheEvents.Add (DateTime.Now.Ticks, x)))
-        let cache = AsyncMemoize(keepStrongly=5, keepWeakly=10)
-
-        let mutable started = 0
-        let mutable canceled = 0
-        let mutable timeout = 0
-        let mutable failed = 0
-        let mutable completed = 0
-
-        let! _ = 
+    let mutable started = 0
+    let mutable canceled = 0
+    let mutable timeout = 0
+    let mutable failed = 0
+    let mutable completed = 0
+    task {
+        let! _ =
             seq {
                 for _ in 1..threads do
                     let rec loop iteration =
@@ -248,7 +287,9 @@ let ``Stress test`` () =
                             let key = keys[rng.Next keys.Length]
                             let result = key * 2
                             let job = cache.Get(key, computation durationMs result) |> Async.AwaitNodeCode
-                            let! runningJob = Async.StartChild(job, timeoutMs)
+                            let cts = new CancellationTokenSource()
+                            let runningJob = Async.StartAsTask(job, cancellationToken=cts.Token) |> Async.AwaitTask
+                            cts.CancelAfter timeoutMs
                             ignore timeoutMs
                             Interlocked.Increment &started |> ignore
                             try
@@ -256,25 +297,25 @@ let ``Stress test`` () =
                                 Assert.Equal(result, actual.Head)
                                 Interlocked.Increment &completed |> ignore
                             with
-                                | :? TaskCanceledException as _e -> 
+                                | :? TaskCanceledException as _e ->
                                     Interlocked.Increment &canceled |> ignore
                                 | :? TimeoutException -> Interlocked.Increment &timeout |> ignore
                                 | :? ExpectedException -> Interlocked.Increment &failed |> ignore
                                 | :? AggregateException as ex when
-                                    ex.InnerExceptions |> Seq.exists (fun e -> e :? ExpectedException) ->
+                                    ex.Flatten().InnerExceptions |> Seq.exists (fun e -> e :? ExpectedException) ->
                                     Interlocked.Increment &failed |> ignore
                                 | e ->
                                     failwith $"Seed {seed} failed on iteration {iteration}: %A{e}"
                             if iteration < iterations then
                                 return! loop (iteration + 1)
                             return ()
-                        } 
+                        }
                     loop 1
             }
             |> Async.Parallel
             |> Async.StartAsTask
           
-        //let task = 
+        //let task =
         //    async {
 
         
@@ -297,6 +338,8 @@ let ``Stress test`` () =
         //ignore cacheEvents
 
         Assert.Equal (threads * iterations, started)
-        // Assert.Equal<int * int * int * int * int>((0,0,0,0,0),(started, completed, canceled, failed, timeout))
+        //Assert.Equal<int * int * int * int * int>((0,0,0,0,0),(started, completed, canceled, failed, timeout))
         Assert.Equal (started, completed + canceled + failed + timeout)
+
+        Assert.True ((float completed) > ((float started) * 0.1), "Less than 10% completed jobs")
     }

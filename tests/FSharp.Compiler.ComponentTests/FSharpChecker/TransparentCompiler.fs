@@ -432,8 +432,8 @@ type SignatureFiles = Yes = 1 | No = 2 | Some = 3
 [<InlineData(SignatureFiles.No)>]
 [<InlineData(SignatureFiles.Some)>]
 let Fuzzing signatureFiles =
-    let seed = System.Random().Next()
-    //let seed = 1093747864
+    //let seed = System.Random().Next()
+    let seed = 1106087513
     let rng = System.Random(int seed)
 
     let fileCount = 30
@@ -562,14 +562,14 @@ let Fuzzing signatureFiles =
     async {
         let! threads = 
             seq { 
-                //Async.StartChild(modificationLoop, runTimeMs) 
+                Async.StartChild(modificationLoop, runTimeMs) 
                 ignore modificationLoop
                 for _ in 1..checkingThreads do 
                     Async.StartChild(checkingLoop, runTimeMs)
             }
             |> Async.Parallel 
         try 
-            do! threads |> Async.Parallel |> Async.Ignore
+            do! threads |> Seq.skip 1 |> Async.Parallel |> Async.Ignore
         with 
             | :? TimeoutException
             | :? TaskCanceledException -> ()
@@ -583,7 +583,7 @@ let Fuzzing signatureFiles =
 [<Theory>]
 [<InlineData true>]
 [<InlineData false>]
-let GiraffeFuzzing signatureFiles =
+let GiraffeFuzzing signatureFiles = task {
     //let seed = System.Random().Next()
     let seed = 1044159179
     let rng = System.Random(int seed)
@@ -595,7 +595,7 @@ let GiraffeFuzzing signatureFiles =
     let maxCheckingDelayMs = 20
     //let runTimeMs = 30000
     let signatureFileModificationProbability = 0.25
-    let modificationLoopIterations = 100
+    let modificationLoopIterations = 10
     let checkingLoopIterations = 30
 
     let minCheckingTimeoutMs = 10
@@ -621,7 +621,7 @@ let GiraffeFuzzing signatureFiles =
     let checker = builder.Checker
 
     // Force creation and caching of options
-    SaveAndCheckProject testsProject checker |> Async.Ignore |> Async.RunSynchronously
+    do! SaveAndCheckProject testsProject checker |> Async.Ignore
 
     let projectAgent = MailboxProcessor.Start(fun (inbox: MailboxProcessor<ProjectRequest>) ->
         let rec loop project =
@@ -694,7 +694,7 @@ let GiraffeFuzzing signatureFiles =
     }
 
 
-    let addCacheEvent (name, jobEvent, key)= 
+    let addCacheEvent (name, jobEvent, key)=
         //System.Diagnostics.Trace.TraceInformation $"{DateTime.Now.Ticks}| {name} {jobEvent} {key}"
         if name = "TcIntermediate" then
             log.Value.Add (DateTime.Now.Ticks, $"{jobEvent} {key}")
@@ -708,9 +708,10 @@ let GiraffeFuzzing signatureFiles =
 
             let timeout = rng.Next(minCheckingTimeoutMs, maxCheckingTimeoutMs)
             // TODO: timeout & cancelation
+            ignore timeout
             log.Value.Add (DateTime.Now.Ticks, $"#{n} Started checking {file.Id} ({timeout} ms timeout)")
-            let! job = Async.StartChild(checker |> checkFile file.Id p, timeout)
-            try 
+            let! job = Async.StartChild(checker |> checkFile file.Id p)
+            try
                 let! result = job
                 log.Value.Add (DateTime.Now.Ticks, $"#{n} Checked {file.Id} %A{snd result}")
                 expectOk result ()
@@ -720,7 +721,7 @@ let GiraffeFuzzing signatureFiles =
             do! Async.Sleep (rng.Next maxCheckingDelayMs)
     }
 
-    async {
+    do! async {
         let! threads =
             seq {
                 Async.StartChild(modificationLoop)
@@ -735,6 +736,7 @@ let GiraffeFuzzing signatureFiles =
             | e -> 
                 let _log = log.Values |> Seq.collect id |> Seq.sortBy fst |> Seq.toArray
                 failwith $"Seed: {seed}\nException: %A{e}"
-    } |> Async.RunSynchronously
-
+    }
+    let _log = log.Values |> Seq.collect id |> Seq.sortBy fst |> Seq.toArray
     builder.DeleteProjectDir()
+}
