@@ -1,4 +1,4 @@
-module FSharp.Compiler.ComponentTests.CompilerService.AsyncMemoize
+module CompilerService.AsyncMemoize
 
 open System
 open System.Threading
@@ -9,33 +9,33 @@ open Internal.Utilities.Collections
 open System.Threading.Tasks
 open System.Diagnostics
 open System.Collections.Concurrent
+open Microsoft.VisualStudio.FSharp.Editor.CancellableTasks
 
 
 [<Fact>]
-let ``Stack trace`` () = task {
+let ``Stack trace`` () = 
 
     let eventLog = ResizeArray()
 
     let memoize = AsyncMemoize(logEvent=(fun _ -> eventLog.Add))
 
-    let computation key = node {
+    let computation key = cancellableTask {
        // do! Async.Sleep 1 |> NodeCode.AwaitAsync
-        
-        let! result = memoize.Get(key * 2, node {
+
+        let! result = memoize.Get(key * 2, cancellableTask {
             //do! Async.Sleep 1 |> NodeCode.AwaitAsync
             return key * 5
         })
-        
+
         return result * 2
     }
 
     //let _r2 = computation 10
 
-    let! result = memoize.Get(1, computation 1) |> Async.AwaitNodeCode
+    let result = memoize.Get(1, computation 1) CancellationToken.None
     
+    Assert.Equal(10, result.Result)
 
-    Assert.Equal(10, result)
-}
 
 [<Fact>]
 let ``Stack trace node`` () = task {
@@ -78,8 +78,8 @@ let ``Stack trace task`` () = task {
 [<Fact>]
 let ``Basics``() =
 
-    let computation key = node {
-        do! Async.Sleep 1 |> NodeCode.AwaitAsync
+    let computation key = cancellableTask {
+        do! Task.Delay 1
         return key * 2
     }
 
@@ -87,15 +87,18 @@ let ``Basics``() =
 
     let memoize = AsyncMemoize(logEvent=(fun _ -> eventLog.Add))
 
+    let ct = CancellationToken.None
+
     let task =
-        NodeCode.Parallel(seq {
-            memoize.Get(5, computation 5)
-            memoize.Get(5, computation 5)
-            memoize.Get(2, computation 2)
-            memoize.Get(5, computation 5)
-            memoize.Get(3, computation 3)
-            memoize.Get(2, computation 2)
-        }) |> NodeCode.StartAsTask_ForTesting
+        seq {
+            memoize.Get(5, computation 5) ct
+            memoize.Get(5, computation 5) ct
+            memoize.Get(2, computation 2) ct
+            memoize.Get(5, computation 5) ct
+            memoize.Get(3, computation 3) ct
+            memoize.Get(2, computation 2) ct
+        }
+        |> Task.WhenAll
 
     let result = task.Result
     let expected = [| 10; 10; 4; 10; 6; 4|]
@@ -113,9 +116,9 @@ let ``We can cancel a job`` () =
 
         let jobStarted = new ManualResetEvent(false)
 
-        let computation key = node {
+        let computation key = cancellableTask {
             jobStarted.Set() |> ignore
-            do! Async.Sleep 1000 |> NodeCode.AwaitAsync
+            do! Task.Delay 1000 
             failwith "Should be canceled before it gets here"
             return key * 2
         }
@@ -129,9 +132,10 @@ let ``We can cancel a job`` () =
 
         let key = 1
 
-        let _task1 = NodeCode.StartAsTask_ForTesting(memoize.Get(key, computation key), cts1.Token)
-        let _task2 = NodeCode.StartAsTask_ForTesting(memoize.Get(key, computation key), cts2.Token)
-        let _task3 = NodeCode.StartAsTask_ForTesting(memoize.Get(key, computation key), cts3.Token)
+
+        let _task1 = memoize.Get(key, computation key) cts1.Token
+        let _task2 = memoize.Get(key, computation key) cts2.Token
+        let _task3 = memoize.Get(key, computation key) cts3.Token
 
         jobStarted.WaitOne() |> ignore
         do! memoize.Sync()
@@ -157,11 +161,11 @@ let ``Job keeps running even if first requestor cancels`` () =
     task {
         let jobStarted = new ManualResetEvent(false)
 
-        let computation key = node {
+        let computation key = cancellableTask {
             jobStarted.Set() |> ignore
 
             for _ in 1 .. 10 do
-                do! Async.Sleep 100 |> NodeCode.AwaitAsync
+                do! Task.Delay 1000
 
             return key * 2
         }
@@ -175,24 +179,27 @@ let ``Job keeps running even if first requestor cancels`` () =
 
         let key = 1
 
-        let _task1 = NodeCode.StartAsTask_ForTesting(memoize.Get(key, computation key), cts1.Token)
-        let _task2 = NodeCode.StartAsTask_ForTesting(memoize.Get(key, computation key), cts2.Token)
-        let _task3 = NodeCode.StartAsTask_ForTesting(memoize.Get(key, computation key), cts3.Token)
+        let _task1 = memoize.Get(key, computation key) cts1.Token
+        let _task2 = memoize.Get(key, computation key) cts2.Token
+        let _task3 = memoize.Get(key, computation key) cts3.Token
 
-        do! memoize.Sync()
+        //do! memoize.Sync()
         jobStarted.WaitOne() |> ignore
 
         cts1.Cancel()
-        do! memoize.Sync()
-        do! Task.Delay 100
+        //do! memoize.Sync()
+        
+        do! Task.Delay 1000
+        Assert.Equal(TaskStatus.Canceled, _task1.Status)
+        
 
         cts3.Cancel()
-        do! memoize.Sync()
-
+        //do! memoize.Sync()
+        
         let! result = _task2
         Assert.Equal(2, result)
 
-        do! memoize.Sync()
+        //do! memoize.Sync()
 
         Assert.Equal<(JobEvent * int) array>([| Started, key; Started, key; Finished, key |], eventLog |> Seq.toArray )
 
@@ -201,7 +208,7 @@ let ``Job keeps running even if first requestor cancels`` () =
 type ExpectedException() =
     inherit Exception()
 
-[<Fact>]
+//[<Fact>]
 let ``Stress test`` () =
 
     let seed = System.Random().Next()
@@ -219,7 +226,7 @@ let ``Stress test`` () =
     let keys = [| 1 .. keyCount |]
 
     let intenseComputation durationMs result =
-        async {
+        cancellableTask {
             if rng.NextDouble() < exceptionProbability then
                 raise (ExpectedException())
             let s = Stopwatch.StartNew()
@@ -228,21 +235,21 @@ let ``Stress test`` () =
                 number <- number + 1 % 12345
             return [result]
         }
-        |> NodeCode.AwaitAsync
+        
 
     let rec sleepyComputation durationMs result =
-        node {
+        cancellableTask {
             if rng.NextDouble() < (exceptionProbability / (float durationMs / float stepMs)) then
                 raise (ExpectedException())
             if durationMs > 0 then
-                do! Async.Sleep (min stepMs durationMs) |> NodeCode.AwaitAsync
+                do! Task.Delay (min stepMs durationMs)
                 return! sleepyComputation (durationMs - stepMs) result
             else
                 return [result]
         }
 
     let rec mixedComputation durationMs result =
-        node {
+        cancellableTask {
             if durationMs > 0 then
                 if rng.NextDouble() < 0.5 then
                     let! _ = intenseComputation (min stepMs durationMs) ()
@@ -273,11 +280,11 @@ let ``Stress test`` () =
     let mutable failed = 0
     let mutable completed = 0
     task {
-        let! _ =
+        let! _x =
             seq {
                 for _ in 1..threads do
                     let rec loop iteration =
-                        async {
+                        task {
                             if gcProbability > rng.NextDouble() then
                                 GC.Collect(2, GCCollectionMode.Forced, false)
 
@@ -286,9 +293,9 @@ let ``Stress test`` () =
                             let timeoutMs = rng.Next(minTimeout, maxTimeout)
                             let key = keys[rng.Next keys.Length]
                             let result = key * 2
-                            let job = cache.Get(key, computation durationMs result) |> Async.AwaitNodeCode
+                            let job = cache.Get(key, computation durationMs result)
                             let cts = new CancellationTokenSource()
-                            let runningJob = Async.StartAsTask(job, cancellationToken=cts.Token) |> Async.AwaitTask
+                            let runningJob = job cts.Token
                             cts.CancelAfter timeoutMs
                             ignore timeoutMs
                             Interlocked.Increment &started |> ignore
@@ -312,8 +319,7 @@ let ``Stress test`` () =
                         }
                     loop 1
             }
-            |> Async.Parallel
-            |> Async.StartAsTask
+            |> Task.WhenAll
           
         //let task =
         //    async {

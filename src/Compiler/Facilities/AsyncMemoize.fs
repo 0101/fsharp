@@ -3,26 +3,31 @@ namespace Internal.Utilities.Collections
 open System
 open System.Collections.Generic
 open System.Threading
-open FSharp.Compiler.BuildGraph
 open System.Threading.Tasks
 
+open System.Collections.Concurrent
 
-type internal Action<'TKey, 'TValue> =
-    | GetOrCompute of NodeCode<'TValue> * CancellationToken
+
+open Microsoft.VisualStudio.FSharp.Editor.CancellableTasks
+open Internal.Utilities.TaskAgent
+
+
+type internal StateUpdate<'TValue> =
     | CancelRequest
     | OriginatorCanceled
     | JobCompleted of 'TValue
     | JobFailed of exn
-    | Sync
 
 type internal MemoizeReply<'TValue> =
     | New of TaskCompletionSource<'TValue>
-    | Existing of NodeCode<'TValue>
+    | Existing of Task<'TValue>
 
-type MemoizeRequest<'TKey, 'TValue> = 'TKey * Action<'TKey, 'TValue> * AsyncReplyChannel<MemoizeReply<'TValue>>
+type MemoizeRequest<'TValue> =
+    | GetOrCompute of CancellableTask<'TValue> * CancellationToken
+    | Sync
 
 type internal Job<'TValue> =
-    | Running of TaskCompletionSource<'TValue> * CancellationTokenSource * NodeCode<'TValue>
+    | Running of TaskCompletionSource<'TValue> * CancellationTokenSource * CancellableTask<'TValue>
     | Completed of 'TValue
 
 type internal JobEvent =
@@ -71,11 +76,11 @@ type internal LruCache<'TKey, 'TValue when 'TKey: equality and 'TValue: not stru
                     event Collected k
                 | _ -> ()
                 removeCollected next
-            | _ -> 
+            | _ ->
                 failwith "Illegal state, strong reference in weak list"
 
     let cutWeakListIfTooLong() =
-        if weakList.Count > keepWeakly then 
+        if weakList.Count > keepWeakly then
             removeCollected weakList.First
 
             let mutable node = weakList.Last
@@ -87,7 +92,7 @@ type internal LruCache<'TKey, 'TValue when 'TKey: equality and 'TValue: not stru
                 event Evicted key
                 node <- previous
 
-    let cutStrongListIfTooLong() = 
+    let cutStrongListIfTooLong() =
         let mutable node = strongList.Last
         while strongList.Count > keepStrongly && node <> null do
             let previous = node.Previous
@@ -173,7 +178,7 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
         LruCache<'TKey, Job<'TValue>>(
             keepStrongly = defaultArg keepStrongly 10,
             keepWeakly = defaultArg keepWeakly 10,
-            requiredToKeep = (function Running _ -> true | _ -> false), 
+            requiredToKeep = (function Running _ -> true | _ -> false),
             event = (function
                 | Evicted -> (fun k -> logEvent |> Option.iter (fun x -> x name (JobEvent.Evicted, k)))
                 | Collected -> (fun k -> logEvent |> Option.iter (fun x -> x name (JobEvent.Collected, k)))
@@ -221,177 +226,154 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
         if requestCounts.ContainsKey key then
             requestCounts[key] <- requestCounts[key] - 1
 
-    let sendAsync (inbox: MailboxProcessor<_>) key msg =
-        inbox.PostAndAsyncReply(fun rc -> key, msg, rc) |> Async.Ignore |> Async.Start
-
     let log event =
         logEvent |> Option.iter (fun x -> x name event)
 
-    let agent =
-        MailboxProcessor.Start(fun (inbox: MailboxProcessor<MemoizeRequest<_, _>>) ->
+    let processRequest post (key, msg) =
 
-            let post = sendAsync inbox
+        match msg, (cache.TryGet key) with
+        | Sync, _ -> New (Unchecked.defaultof<_>)
+        | GetOrCompute _, Some (Completed result) -> Existing (Task.FromResult result)
+        | GetOrCompute(_, ct), Some (Running (tcs, _, _)) ->
+            incrRequestCount key
 
-            async {
-                while true do
+            ct.Register(fun _ ->
+                let _name = name
+                post (key, CancelRequest))
+                |> saveRegistration key
+
+            Existing tcs.Task
+
+        | GetOrCompute(computation, ct), None ->
+
+            let cts = new CancellationTokenSource()
+
+            ct.Register(fun _ ->
+                let _name = name
+                post (key, OriginatorCanceled))
+                |> saveRegistration key
+
+            let tcs = TaskCompletionSource()
+
+            let wrappedComputation =
+                cancellableTask {
                     try
-                        let _name = name
-
-                        let! key, action, replyChannel = inbox.Receive()
-
-                        let cached =
-                            match action with
-                            | Sync -> None
-                            | _ -> cache.TryGet(key)
-
-                        //System.Diagnostics.Trace.TraceInformation $"{key} {action} {cached.IsSome}"
-
-                        match action, cached with
-                        | Sync, _ -> replyChannel.Reply Unchecked.defaultof<_>
-                        | GetOrCompute _, Some (Completed result) -> replyChannel.Reply (Existing (node.Return result))
-                        | GetOrCompute (_, ct), Some (Running (tcs, _, _)) ->
-                            incrRequestCount key
-
-                            ct.Register(fun _ ->
-                                let _name = name
-                                post key CancelRequest)
-                                |> saveRegistration key
-
-                            replyChannel.Reply (Existing (tcs.Task |> NodeCode.AwaitTask))
-
-                        | GetOrCompute (computation, ct), None ->
-
-                            let cts = new CancellationTokenSource()
-
-                            ct.Register(fun _ ->
-                                let _name = name
-                                post key OriginatorCanceled)
-                                |> saveRegistration key
-
-                            let tcs = TaskCompletionSource()
-
-                            let wrappedComputation =
-                                node {
-                                    try
-                                        log (Started, key)
-                                        let! result = computation
-                                        post key (JobCompleted result)
-                                        return result
-                                    with
-                                    | :? TaskCanceledException
-                                    | :? OperationCanceledException as ex ->
-                                        post key OriginatorCanceled
-                                        return raise ex
-                                    | ex ->
-                                        post key (JobFailed ex)
-                                        return raise ex
-                                }
-
-                            cache.Set(key, (Running(tcs, cts, wrappedComputation)))
-
-                            incrRequestCount key
-
-                            replyChannel.Reply (New tcs)
-
-                        | OriginatorCanceled, Some (Running (_tcs, cts, wrappedComputation)) ->
-                            decrRequestCount key
-
-                            if requestCounts[key] < 1 then
-                                cts.Cancel()
-                                cache.Remove key
-                                requestCounts.Remove key |> ignore
-                                log (Canceled, key)
-                            else
-                                // We need to restart the computation
-                                Async.Start(
-                                    wrappedComputation
-                                    |> Async.AwaitNodeCode
-                                    |> Async.Ignore, // Ignore the result, which will be delivered via the TaskCompletionSource from within wrappedComputation
-                                    cts.Token)
-                        | OriginatorCanceled, None -> ()
-
-                         // Shouldn't happen, unless we allow evicting Running jobs from cache
-
-                        | CancelRequest, Some (Running (_tcs, cts, _c)) ->
-                            decrRequestCount key
-
-                            if requestCounts[key] < 1 then
-                                cancelRegistration key
-                                cts.Cancel()
-                                //cache.RemoveAnySimilar(tok, key)
-                                cache.Remove key
-                                requestCounts.Remove key |> ignore
-                                log (Canceled, key)
-
-                        | CancelRequest, None
-                        | CancelRequest, Some (Completed _) -> ()
-
-                        | JobFailed ex, Some (Running (tcs, _cts, _c)) ->
-                            // TODO: should we restart if there are more requests?
-                            cancelRegistration key
-                            cache.Remove key
-                            requestCounts.Remove key |> ignore
-                            log (Failed, key)
-                            tcs.TrySetException ex |> ignore
-
-                        | JobCompleted result, Some (Running (tcs, _cts, _c)) ->
-                            cancelRegistration key
-                            cache.Set(key, (Completed result))
-                            log (Finished, key)
-                            tcs.SetResult result
-
-                        // Job can't be evicted from cache while it's running because then subsequent requesters would be waiting forever
-                        // ???
-                        | JobFailed _, None  -> ()
-
-                        //| OriginatorCanceled, None
-                        | JobCompleted _, None ->
-                            //failwith "Invalid state: Running job missing in cache"
-                            ()
-
-                        | JobFailed ex, Some (Completed _job) ->
-                            //failwith $"Invalid state: Failed Completed job \n%A{ex}"
-                            ignore ex
-
-                        | JobCompleted _result, Some (Completed _job) ->
-                            //failwith "Invalid state: Double-Completed job"
-                            ()
-
-                        | OriginatorCanceled, Some (Completed _result) ->
-                            //failwith "Invalid state: Canceled Completed job"
-                            ()
-
+                        log (Started, key)
+                        let! result = computation
+                        post (key, (JobCompleted result))
+                        return result
                     with
-                    | :? OperationCanceledException as e ->
-                        System.Diagnostics.Trace.TraceError($"AsyncMemoize OperationCanceledException: {e.Message}")
+                    | :? TaskCanceledException
+                    | :? OperationCanceledException as ex ->
+                        post (key, OriginatorCanceled)
+                        return raise ex
                     | ex ->
-                        let _requestCounts = requestCounts
-                        System.Diagnostics.Trace.TraceError($"AsyncMemoize Exception: %A{ex}")
-            })
+                        post (key, (JobFailed ex))
+                        return raise ex
+                }
+
+            cache.Set(key, (Running(tcs, cts, wrappedComputation)))
+
+            incrRequestCount key
+
+            New tcs
+
+    let processStateUpdate _post (key, action: StateUpdate<_>) =
+
+        match action, (cache.TryGet key) with
+
+        | OriginatorCanceled, Some (Running (_tcs, cts, wrappedComputation)) ->
+            decrRequestCount key
+
+            if requestCounts[key] < 1 then
+                cts.Cancel()
+                cache.Remove key
+                requestCounts.Remove key |> ignore
+                log (Canceled, key)
+
+            else
+                // We need to restart the computation
+                let newRunningJob = wrappedComputation cts.Token
+
+                newRunningJob |> ignore // Ignore the result, which will be delivered via the TaskCompletionSource from within wrappedComputation
+
+        | OriginatorCanceled, None -> ()
+
+            // Shouldn't happen, unless we allow evicting Running jobs from cache
+
+        | CancelRequest, Some (Running (_tcs, cts, _c)) ->
+            decrRequestCount key
+
+            if requestCounts[key] < 1 then
+                cancelRegistration key
+                cts.Cancel()
+                //cache.RemoveAnySimilar(tok, key)
+                cache.Remove key
+                requestCounts.Remove key |> ignore
+                log (Canceled, key)
+
+        | CancelRequest, None
+        | CancelRequest, Some (Completed _) -> ()
+
+        | JobFailed ex, Some (Running (tcs, _cts, _c)) ->
+            // TODO: should we restart if there are more requests?
+            cancelRegistration key
+            cache.Remove key
+            requestCounts.Remove key |> ignore
+            log (Failed, key)
+            tcs.TrySetException ex |> ignore
+
+        | JobCompleted result, Some (Running (tcs, _cts, _c)) ->
+            cancelRegistration key
+            cache.Set(key, (Completed result))
+            log (Finished, key)
+            tcs.SetResult result
+
+        // Job can't be evicted from cache while it's running because then subsequent requesters would be waiting forever
+        // ???
+        | JobFailed _, None  -> ()
+
+        //| OriginatorCanceled, None
+        | JobCompleted _, None ->
+            //failwith "Invalid state: Running job missing in cache"
+            ()
+
+        | JobFailed ex, Some (Completed _job) ->
+            //failwith $"Invalid state: Failed Completed job \n%A{ex}"
+            ignore ex
+
+        | JobCompleted _result, Some (Completed _job) ->
+            //failwith "Invalid state: Double-Completed job"
+            ()
+
+        | OriginatorCanceled, Some (Completed _result) ->
+            //failwith "Invalid state: Canceled Completed job"
+            ()
+
+    let agent =
+        TaskAgent<'TKey * MemoizeRequest<'TValue>, 'TKey * StateUpdate<'TValue>, MemoizeReply<'TValue>>(processRequest, processStateUpdate)
 
     member _.Get(key, computation) =
 
-        let post = sendAsync agent
+        cancellableTask {
+            let! ct = CancellableTask.getCurrentCancellationToken()
 
-        node {
-            let! ct = NodeCode.CancellationToken
+            match! agent.PostAndAwaitReply(key, GetOrCompute (computation, ct)) with
 
-            match! agent.PostAndAsyncReply(fun rc -> key, (GetOrCompute(computation, ct)), rc) |> NodeCode.AwaitAsync  with
-            //match agent.PostAndReply(fun rc -> key, (GetOrCompute(computation, ct)), rc) with
             | New _tcs ->
 
                 try
                     log (Started, key)
                     let! result = computation
-                    post key (JobCompleted result)
+                    agent.Post (key, (JobCompleted result))
                     return result
                 with
                 | :? TaskCanceledException
                 | :? OperationCanceledException as ex ->
-                    post key OriginatorCanceled
+                    agent.Post (key, OriginatorCanceled)
                     return raise ex
                 | ex ->
-                    post key (JobFailed ex)
+                    agent.Post (key, (JobFailed ex))
                     return raise ex
 
             | Existing job -> return! job
@@ -403,4 +385,8 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
     //    computation
 
     member _.Sync() =
-        agent.PostAndAsyncReply(fun rc -> Unchecked.defaultof<_>, (Sync), rc) |> Async.Ignore
+        task {
+            let! _x = agent.PostAndAwaitReply (Unchecked.defaultof<_>, (Sync))
+            return ()
+        }
+

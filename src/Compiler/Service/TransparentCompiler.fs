@@ -41,6 +41,7 @@ open FSharp.Compiler.EditorServices
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.CreateILModule
 open FSharp.Compiler.TypedTreeOps
+open Microsoft.VisualStudio.FSharp.Editor.CancellableTasks
 
 type internal FSharpFile =
     {
@@ -196,10 +197,10 @@ module private TypeCheckingGraphProcessing =
     /// </summary>
     let processTypeCheckingGraph
         (graph: Graph<NodeToTypeCheck>)
-        (work: NodeToTypeCheck -> TcInfo -> NodeCode<Finisher<NodeToTypeCheck, TcInfo, PartialResult>>)
+        (work: NodeToTypeCheck -> TcInfo -> CancellableTask<Finisher<NodeToTypeCheck, TcInfo, PartialResult>>)
         (emptyState: TcInfo)
-        : NodeCode<(int * PartialResult) list * TcInfo> =
-        node {
+        : CancellableTask<(int * PartialResult) list * TcInfo> =
+        cancellableTask {
 
             let workWrapper
                 (getProcessedNode: NodeToTypeCheck
@@ -217,12 +218,12 @@ module private TypeCheckingGraphProcessing =
 
                     let inputState = combineResults emptyState deps transitiveDeps folder
 
-                    let! singleRes = work node.Item inputState |> Async.AwaitNodeCode
+                    let! singleRes = work node.Item inputState
                     let state = folder inputState singleRes
                     return state, singleRes
                 }
 
-            let! results = processGraphAsync graph workWrapper |> NodeCode.AwaitAsync
+            let! results = processGraphAsync graph workWrapper
 
             let finalFileResults, state: (int * PartialResult) list * TcInfo =
                 (([], emptyState),
@@ -239,6 +240,9 @@ module private TypeCheckingGraphProcessing =
         }
 
 open TypeCheckingGraphProcessing
+open Microsoft.VisualStudio.FSharp.Editor.CancellableTasks.CancellableTaskBuilder
+open System.Threading
+open Microsoft.VisualStudio.FSharp.Editor.CancellableTasks
 
 type internal TransparentCompiler
     (
@@ -345,10 +349,10 @@ type internal TransparentCompiler
 
         FrameworkImportsCache.Get(
             key,
-            node {
+            cancellableTask {
                 use _ = Activity.start "ComputeFrameworkImports" []
                 let tcConfigP = TcConfigProvider.Constant tcConfig
-                return! TcImports.BuildFrameworkTcImports(tcConfigP, frameworkDLLs, nonFrameworkResolutions)
+                return! TcImports.BuildFrameworkTcImports(tcConfigP, frameworkDLLs, nonFrameworkResolutions) |> NodeCode.StartAsTask_ForTesting
             }
         )
 
@@ -368,14 +372,14 @@ type internal TransparentCompiler
             importsInvalidatedByTypeProvider: Event<unit>
         ) =
 
-        node {
+        cancellableTask {
             let diagnosticsLogger =
                 CompilationDiagnosticLogger("CombineImportedAssembliesTask", tcConfig.diagnosticsOptions)
 
             use _ = new CompilationGlobalsScope(diagnosticsLogger, BuildPhase.Parameter)
 
             let! tcImports =
-                node {
+                cancellableTask {
                     try
                         let! tcImports =
                             TcImports.BuildNonFrameworkTcImports(
@@ -384,7 +388,7 @@ type internal TransparentCompiler
                                 nonFrameworkResolutions,
                                 unresolvedReferences,
                                 dependencyProvider
-                            )
+                            ) |> NodeCode.StartAsTask_ForTesting
 #if !NO_TYPEPROVIDERS
                         // TODO: review and handle the event
                         tcImports.GetCcusExcludingBase()
@@ -497,7 +501,7 @@ type internal TransparentCompiler
 
         BootstrapInfoStaticCache.Get(
             key,
-            node {
+            cancellableTask {
                 use _ =
                     Activity.start
                         "ComputeBootstrapInfoStatic"
@@ -730,7 +734,7 @@ type internal TransparentCompiler
         )
 
     let computeBootstrapInfoInner (projectSnapshot: FSharpProjectSnapshot) =
-        node {
+        cancellableTask {
             let! assemblyName,
                  outFile,
                  sourceFiles,
@@ -781,7 +785,7 @@ type internal TransparentCompiler
     let ComputeBootstrapInfo (projectSnapshot: FSharpProjectSnapshot) =
         BootstrapInfoCache.Get(
             projectSnapshot.Key,
-            node {
+            cancellableTask {
                 use _ =
                     Activity.start "ComputeBootstrapInfo" [| Activity.Tags.project, projectSnapshot.ProjectFileName |> Path.GetFileName |]
 
@@ -790,7 +794,7 @@ type internal TransparentCompiler
                 use _ = new CompilationGlobalsScope(delayedLogger, BuildPhase.Parameter)
 
                 let! bootstrapInfoOpt =
-                    node {
+                    cancellableTask {
                         try
                             return! computeBootstrapInfoInner projectSnapshot
                         with exn ->
@@ -826,7 +830,7 @@ type internal TransparentCompiler
 
         ParseFileCache.Get(
             key,
-            node {
+            cancellableTask {
                 use _ =
                     Activity.start
                         "ComputeParseFile"
@@ -844,7 +848,7 @@ type internal TransparentCompiler
 
                 let flags = file.IsLastCompiland, file.IsExe
                 let fileName = file.Source.FileName
-                let! sourceText = file.Source.GetSource() |> NodeCode.AwaitTask
+                let! sourceText = file.Source.GetSource()
 
                 let input =
                     ParseOneInputSourceText(tcConfig, lexResourceManager, fileName, flags, diagnosticsLogger, sourceText)
@@ -854,7 +858,7 @@ type internal TransparentCompiler
         )
 
     let computeDependencyGraph parsedInputs (tcConfig: TcConfig) (processGraph: Graph<FileIndex> -> Graph<FileIndex>) =
-        node {
+        cancellableTask {
             let sourceFiles: FileInProject array =
                 parsedInputs
                 |> Seq.toArray
@@ -956,7 +960,7 @@ type internal TransparentCompiler
         TcIntermediateCache.Get(
             //projectSnapshot.OnlyWith(dependencyFiles).Key,
             projectSnapshot.UpTo(fileIndex).WithoutImplFilesThatHaveSignaturesExceptLastOne.Key,
-            node {
+            cancellableTask {
                 let input = parsedInput
                 let fileName = input.FileName
 
@@ -993,7 +997,9 @@ type internal TransparentCompiler
 
                 let node = NodeToTypeCheck.PhysicalFile fileIndex // TODO: is this correct?
 
-                let! finisher =
+                let! ct = CancellableTask.getCurrentCancellationToken()
+
+                let finisher =
                     CheckOneInputWithCallback
                         node
                         ((fun () -> hadParseErrors || diagnosticsLogger.ErrorCount > 0),
@@ -1004,8 +1010,14 @@ type internal TransparentCompiler
                          TcResultsSink.WithSink sink,
                          prevTcInfo.tcState,
                          input,
-                         true)
-                    |> NodeCode.FromCancellable
+                         true) 
+                         // TODO: native bind
+                         |> Cancellable.run ct
+
+                let finisher =
+                    match finisher with
+                    | ValueOrCancelled.Cancelled e -> raise e
+                    | ValueOrCancelled.Value v -> v
 
                 //fileChecked.Trigger fileName
 
@@ -1032,7 +1044,7 @@ type internal TransparentCompiler
         (fileNode: NodeToTypeCheck)
         tcInfo
         =
-        node {
+        cancellableTask {
 
             match fileNode with
             | NodeToTypeCheck.PhysicalFile index ->
@@ -1134,7 +1146,7 @@ type internal TransparentCompiler
 
         TcFileCache.Get(
             key,
-            node {
+            cancellableTask {
                 use _ =
                     Activity.start "ComputeTcFile" [| Activity.Tags.fileName, file.Source.FileName |> Path.GetFileName |]
 
@@ -1145,7 +1157,9 @@ type internal TransparentCompiler
                         file
                     }
 
-                let! parsedInputs = files |> Seq.map (ComputeParseFile bootstrapInfo) |> NodeCode.Parallel
+                let! ct = CancellableTask.getCurrentCancellationToken()
+
+                let! parsedInputs = files |> Seq.map (ComputeParseFile bootstrapInfo) |> Seq.map ((|>) ct) |> Task.WhenAll
 
                 let! graph, dependencyFiles =
                     ComputeDependencyGraphForFile priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
@@ -1164,7 +1178,7 @@ type internal TransparentCompiler
         )
 
     let getParseResult (bootstrapInfo: BootstrapInfo) creationDiags fileName =
-        node {
+        cancellableTask {
             let file = bootstrapInfo.GetFile fileName
 
             let! parseTree, parseDiagnostics, sourceText = ComputeParseFile bootstrapInfo file
@@ -1201,7 +1215,7 @@ type internal TransparentCompiler
 
         ParseAndCheckFileInProjectCache.Get(
             key,
-            node {
+            cancellableTask {
 
                 use _ =
                     Activity.start "ComputeParseAndCheckFileInProject" [| Activity.Tags.fileName, fileName |> Path.GetFileName |]
@@ -1286,16 +1300,19 @@ type internal TransparentCompiler
     let ComputeParseAndCheckAllFilesInProject (bootstrapInfo: BootstrapInfo) (projectSnapshot: FSharpProjectSnapshot) =
         ParseAndCheckAllFilesInProjectCache.Get(
             projectSnapshot.Key,
-            node {
+            cancellableTask {
                 use _ =
                     Activity.start
                         "ComputeParseAndCheckAllFilesInProject"
                         [| Activity.Tags.project, projectSnapshot.ProjectFileName |> Path.GetFileName |]
 
+                let! ct = CancellableTask.getCurrentCancellationToken()
+
                 let! parsedInputs =
                     bootstrapInfo.SourceFiles
                     |> Seq.map (ComputeParseFile bootstrapInfo)
-                    |> NodeCode.Parallel
+                    |> Seq.map ((|>) ct)
+                    |> Task.WhenAll
 
                 let! graph, dependencyFiles =
                     ComputeDependencyGraphForProject projectSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
@@ -1311,7 +1328,7 @@ type internal TransparentCompiler
     let ComputeProjectExtras (bootstrapInfo: BootstrapInfo) (projectSnapshot: FSharpProjectSnapshot) =
         ProjectExtrasCache.Get(
             projectSnapshot.Key,
-            node {
+            cancellableTask {
                 let! results, finalInfo = ComputeParseAndCheckAllFilesInProject bootstrapInfo projectSnapshot
 
                 let assemblyName = bootstrapInfo.AssemblyName
@@ -1404,7 +1421,7 @@ type internal TransparentCompiler
     let ComputeGetAssemblyData (projectSnapshot: FSharpProjectSnapshot) =
         AssemblyDataCache.Get(
             projectSnapshot.WithoutImplFilesThatHaveSignatures.Key,
-            node {
+            cancellableTask {
                 match! ComputeBootstrapInfo projectSnapshot with
                 | None, _ -> return ProjectAssemblyDataResult.Unavailable true
                 | Some bootstrapInfo, _creationDiags ->
@@ -1416,7 +1433,7 @@ type internal TransparentCompiler
     let ComputeParseAndCheckProject (projectSnapshot: FSharpProjectSnapshot) =
         ParseAndCheckProjectCache.Get(
             projectSnapshot.Key,
-            node {
+            cancellableTask {
 
                 match! ComputeBootstrapInfo projectSnapshot with
                 | None, creationDiags ->
@@ -1481,7 +1498,7 @@ type internal TransparentCompiler
         )
 
     let tryGetSink fileName (projectSnapshot: FSharpProjectSnapshot) =
-        node {
+        cancellableTask {
             match! ComputeBootstrapInfo projectSnapshot with
             | None, _ -> return None
             | Some bootstrapInfo, _creationDiags ->
@@ -1498,7 +1515,7 @@ type internal TransparentCompiler
 
         SemanticClassificationCache.Get(
             key,
-            node {
+            cancellableTask {
                 use _ =
                     Activity.start "ComputeSemanticClassification" [| Activity.Tags.fileName, fileName |> Path.GetFileName |]
 
@@ -1530,7 +1547,7 @@ type internal TransparentCompiler
 
         ItemKeyStoreCache.Get(
             key,
-            node {
+            cancellableTask {
                 use _ =
                     Activity.start "ComputeItemKeyStore" [| Activity.Tags.fileName, fileName |> Path.GetFileName |]
 
@@ -1565,7 +1582,7 @@ type internal TransparentCompiler
         )
 
     member _.ParseFile(fileName, projectSnapshot: FSharpProjectSnapshot, _userOpName) =
-        node {
+        cancellableTask {
             //use _ =
             //    Activity.start "ParseFile" [| Activity.Tags.fileName, fileName |> Path.GetFileName |]
 
@@ -1583,13 +1600,17 @@ type internal TransparentCompiler
     member _.FindReferencesInFile(fileName: string, projectSnapshot: FSharpProjectSnapshot, symbol: FSharpSymbol, userOpName: string) =
         ignore userOpName
 
-        node {
+        cancellableTask {
             match! ComputeItemKeyStore(fileName, projectSnapshot) with
             | None -> return Seq.empty
             | Some itemKeyStore -> return itemKeyStore.FindAll symbol.Item
         }
 
-    member _.GetAssemblyData(projectSnapshot: FSharpProjectSnapshot, _userOpName) = ComputeGetAssemblyData projectSnapshot
+    member _.GetAssemblyData(projectSnapshot: FSharpProjectSnapshot, _userOpName) = 
+        node {
+            let! ct = NodeCode.CancellationToken
+            return! ComputeGetAssemblyData projectSnapshot ct |> NodeCode.AwaitTask
+        }
 
     interface IBackgroundCompiler with
 
@@ -1613,7 +1634,8 @@ type internal TransparentCompiler
                     |> NodeCode.AwaitAsync
 
                 ignore parseResults
-                let! _, result = this.ParseAndCheckFileInProject(fileName, snapshot, userOpName)
+                let! ct = NodeCode.CancellationToken
+                let! _, result = this.ParseAndCheckFileInProject(fileName, snapshot, userOpName) ct |> NodeCode.AwaitTask
                 return result
             }
 
@@ -1632,7 +1654,8 @@ type internal TransparentCompiler
                     |> NodeCode.AwaitAsync
 
                 ignore parseResults
-                let! _, result = this.ParseAndCheckFileInProject(fileName, snapshot, userOpName)
+                let! ct = NodeCode.CancellationToken
+                let! _, result = this.ParseAndCheckFileInProject(fileName, snapshot, userOpName) ct |> NodeCode.AwaitTask
                 return Some result
             }
 
@@ -1659,11 +1682,15 @@ type internal TransparentCompiler
             node {
                 ignore canInvalidateProject
                 let! snapshot = FSharpProjectSnapshot.FromOptions options |> NodeCode.AwaitAsync
-                return! this.FindReferencesInFile(fileName, snapshot, symbol, userOpName)
+                let! ct = NodeCode.CancellationToken
+                return! this.FindReferencesInFile(fileName, snapshot, symbol, userOpName) ct |> NodeCode.AwaitTask
             }
 
         member this.FindReferencesInFile(fileName, projectSnapshot, symbol, userOpName) =
-            this.FindReferencesInFile(fileName, projectSnapshot, symbol, userOpName)
+            node {
+                let! ct = NodeCode.CancellationToken
+                return! this.FindReferencesInFile(fileName, projectSnapshot, symbol, userOpName) ct |> NodeCode.AwaitTask
+            }
 
         member _.FrameworkImportsCache: FrameworkImportsCache =
             backgroundCompiler.FrameworkImportsCache
@@ -1685,8 +1712,10 @@ type internal TransparentCompiler
             ) : NodeCode<FSharpParseFileResults * FSharpCheckFileResults> =
             node {
                 let! snapshot = FSharpProjectSnapshot.FromOptions options |> NodeCode.AwaitAsync
+                
+                let! ct = NodeCode.CancellationToken
 
-                match! this.ParseAndCheckFileInProject(fileName, snapshot, userOpName) with
+                match! this.ParseAndCheckFileInProject(fileName, snapshot, userOpName) ct |> NodeCode.AwaitTask with
                 | parseResult, FSharpCheckFileAnswer.Succeeded checkResult -> return parseResult, checkResult
                 | parseResult, FSharpCheckFileAnswer.Aborted _ -> return parseResult, FSharpCheckFileResults.MakeEmpty(fileName, [||], true)
             }
@@ -1699,7 +1728,8 @@ type internal TransparentCompiler
             ) : NodeCode<FSharpParseFileResults> =
             node {
                 let! snapshot = FSharpProjectSnapshot.FromOptions options |> NodeCode.AwaitAsync
-                return! this.ParseFile(fileName, snapshot, userOpName)
+                let! ct = NodeCode.CancellationToken
+                return! this.ParseFile(fileName, snapshot, userOpName) ct |> NodeCode.AwaitTask
             }
 
         member this.GetCachedCheckFileResult
@@ -1716,7 +1746,9 @@ type internal TransparentCompiler
                     FSharpProjectSnapshot.FromOptions(options, fileName, 1, sourceText)
                     |> NodeCode.AwaitAsync
 
-                match! this.ParseAndCheckFileInProject(fileName, snapshot, "GetCachedCheckFileResult") with
+                let! ct = NodeCode.CancellationToken
+
+                match! this.ParseAndCheckFileInProject(fileName, snapshot, "GetCachedCheckFileResult") ct |> NodeCode.AwaitTask with
                 | parseResult, FSharpCheckFileAnswer.Succeeded checkResult -> return Some(parseResult, checkResult)
                 | _, FSharpCheckFileAnswer.Aborted _ -> return None
             }
@@ -1750,8 +1782,11 @@ type internal TransparentCompiler
             )
 
         member this.GetSemanticClassificationForFile(fileName: string, snapshot: FSharpProjectSnapshot, userOpName: string) =
-            ignore userOpName
-            ComputeSemanticClassification(fileName, snapshot)
+            node {
+                ignore userOpName
+                let! ct = NodeCode.CancellationToken
+                return! ComputeSemanticClassification(fileName, snapshot) ct |> NodeCode.AwaitTask
+            }
 
         member this.GetSemanticClassificationForFile
             (
@@ -1762,7 +1797,8 @@ type internal TransparentCompiler
             node {
                 ignore userOpName
                 let! snapshot = FSharpProjectSnapshot.FromOptions options |> NodeCode.AwaitAsync
-                return! ComputeSemanticClassification(fileName, snapshot)
+                let! ct = NodeCode.CancellationToken
+                return! ComputeSemanticClassification(fileName, snapshot) ct |> NodeCode.AwaitTask
             }
 
         member this.InvalidateConfiguration(options: FSharpProjectOptions, userOpName: string) : unit =
@@ -1787,25 +1823,36 @@ type internal TransparentCompiler
                     FSharpProjectSnapshot.FromOptions(options, fileName, fileVersion, sourceText)
                     |> NodeCode.AwaitAsync
 
-                return! this.ParseAndCheckFileInProject(fileName, snapshot, userOpName)
+                let! ct = NodeCode.CancellationToken
+                return! this.ParseAndCheckFileInProject(fileName, snapshot, userOpName) ct |> NodeCode.AwaitTask
             }
 
         member this.ParseAndCheckFileInProject(fileName: string, projectSnapshot: FSharpProjectSnapshot, userOpName: string) =
-            this.ParseAndCheckFileInProject(fileName, projectSnapshot, userOpName)
+            node {
+                let! ct = NodeCode.CancellationToken
+                return! this.ParseAndCheckFileInProject(fileName, projectSnapshot, userOpName) ct |> NodeCode.AwaitTask
+            }
 
         member this.ParseAndCheckProject(options: FSharpProjectOptions, userOpName: string) : NodeCode<FSharpCheckProjectResults> =
             node {
                 ignore userOpName
                 let! snapshot = FSharpProjectSnapshot.FromOptions options |> NodeCode.AwaitAsync
-                return! ComputeParseAndCheckProject snapshot
+                let! ct = NodeCode.CancellationToken
+                return! ComputeParseAndCheckProject snapshot ct |> NodeCode.AwaitTask
             }
 
         member this.ParseAndCheckProject(projectSnapshot: FSharpProjectSnapshot, userOpName: string) : NodeCode<FSharpCheckProjectResults> =
-            ignore userOpName
-            ComputeParseAndCheckProject projectSnapshot
+            node {
+                ignore userOpName
+                let! ct = NodeCode.CancellationToken
+                return! ComputeParseAndCheckProject projectSnapshot ct |> NodeCode.AwaitTask
+            }
 
         member this.ParseFile(fileName, projectSnapshot, userOpName) =
-            this.ParseFile(fileName, projectSnapshot, userOpName)
+            node {
+                let! ct = NodeCode.CancellationToken
+                return! this.ParseFile(fileName, projectSnapshot, userOpName) ct |> NodeCode.AwaitTask
+            }
 
         member this.ParseFile
             (

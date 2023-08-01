@@ -1,4 +1,4 @@
-﻿module FSharp.Compiler.ComponentTests.CompilerService.LruCache
+﻿module CompilerService.LruCache
 open Internal.Utilities.Collections
 
 open Xunit
