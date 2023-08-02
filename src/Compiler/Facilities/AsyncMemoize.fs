@@ -19,7 +19,7 @@ type internal StateUpdate<'TValue> =
     | JobFailed of exn
 
 type internal MemoizeReply<'TValue> =
-    | New of TaskCompletionSource<'TValue>
+    | New
     | Existing of Task<'TValue>
 
 type MemoizeRequest<'TValue> =
@@ -231,8 +231,12 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
 
     let processRequest post (key, msg) =
 
-        match msg, (cache.TryGet key) with
-        | Sync, _ -> New (Unchecked.defaultof<_>)
+        let cached = cache.TryGet key
+
+        // System.Diagnostics.Trace.TraceInformation $"[{key}] GetOrCompute {cached}"
+
+        match msg, cached with
+        | Sync, _ -> New
         | GetOrCompute _, Some (Completed result) -> Existing (Task.FromResult result)
         | GetOrCompute(_, ct), Some (Running (tcs, _, _)) ->
             incrRequestCount key
@@ -245,69 +249,63 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
             Existing tcs.Task
 
         | GetOrCompute(computation, ct), None ->
-
-            let cts = new CancellationTokenSource()
+            incrRequestCount key
 
             ct.Register(fun _ ->
                 let _name = name
                 post (key, OriginatorCanceled))
                 |> saveRegistration key
 
-            let tcs = TaskCompletionSource()
+            cache.Set(key, (Running(TaskCompletionSource(), (new CancellationTokenSource()), computation)))
 
-            let wrappedComputation =
-                cancellableTask {
-                    try
-                        log (Started, key)
-                        let! result = computation
-                        post (key, (JobCompleted result))
-                        return result
-                    with
-                    | :? TaskCanceledException
-                    | :? OperationCanceledException as ex ->
-                        post (key, OriginatorCanceled)
-                        return raise ex
-                    | ex ->
-                        post (key, (JobFailed ex))
-                        return raise ex
-                }
+            New
 
-            cache.Set(key, (Running(tcs, cts, wrappedComputation)))
+    let processStateUpdate post (key, action: StateUpdate<_>) =
 
-            incrRequestCount key
+        let cached = cache.TryGet key
 
-            New tcs
+        // System.Diagnostics.Trace.TraceInformation $"[{key}] {action} {cached}"
 
-    let processStateUpdate _post (key, action: StateUpdate<_>) =
+        match action, cached with
 
-        match action, (cache.TryGet key) with
+        | OriginatorCanceled, Some (Running (tcs, cts, computation)) ->
 
-        | OriginatorCanceled, Some (Running (_tcs, cts, wrappedComputation)) ->
             decrRequestCount key
-
             if requestCounts[key] < 1 then
+                cancelRegistration key
                 cts.Cancel()
+                tcs.TrySetCanceled() |> ignore
                 cache.Remove key
                 requestCounts.Remove key |> ignore
                 log (Canceled, key)
 
             else
                 // We need to restart the computation
-                let newRunningJob = wrappedComputation cts.Token
-
-                newRunningJob |> ignore // Ignore the result, which will be delivered via the TaskCompletionSource from within wrappedComputation
+                cts.Token
+                |> cancellableTask {
+                    try
+                        log (Started, key)
+                        let! result = computation
+                        post (key, (JobCompleted result))
+                    with
+                    | :? OperationCanceledException ->
+                        post (key, CancelRequest)
+                    | ex ->
+                        post (key, (JobFailed ex))
+                }
+                |> ignore
 
         | OriginatorCanceled, None -> ()
 
             // Shouldn't happen, unless we allow evicting Running jobs from cache
 
-        | CancelRequest, Some (Running (_tcs, cts, _c)) ->
-            decrRequestCount key
+        | CancelRequest, Some (Running (tcs, cts, _c)) ->
 
+            decrRequestCount key
             if requestCounts[key] < 1 then
                 cancelRegistration key
                 cts.Cancel()
-                //cache.RemoveAnySimilar(tok, key)
+                tcs.TrySetCanceled() |> ignore
                 cache.Remove key
                 requestCounts.Remove key |> ignore
                 log (Canceled, key)
@@ -326,6 +324,7 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
         | JobCompleted result, Some (Running (tcs, _cts, _c)) ->
             cancelRegistration key
             cache.Set(key, (Completed result))
+            requestCounts.Remove key |> ignore
             log (Finished, key)
             tcs.SetResult result
 
@@ -360,7 +359,7 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
 
             match! agent.PostAndAwaitReply(key, GetOrCompute (computation, ct)) with
 
-            | New _tcs ->
+            | New ->
 
                 try
                     log (Started, key)
@@ -370,7 +369,7 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
                 with
                 | :? TaskCanceledException
                 | :? OperationCanceledException as ex ->
-                    agent.Post (key, OriginatorCanceled)
+                    //agent.Post (key, OriginatorCanceled)
                     return raise ex
                 | ex ->
                     agent.Post (key, (JobFailed ex))
