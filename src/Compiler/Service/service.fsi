@@ -6,6 +6,8 @@ namespace FSharp.Compiler.CodeAnalysis
 
 open System
 open System.IO
+open System.Threading
+open System.Threading.Tasks
 open FSharp.Compiler.AbstractIL.ILBinaryReader
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.CompilerConfig
@@ -200,8 +202,8 @@ type public FSharpChecker =
             Async<FSharpParseFileResults * FSharpCheckFileAnswer>
 
     member ParseAndCheckFileInProject:
-        fileName: string * projectSnapshot: FSharpProjectSnapshot * ?userOpName: string ->
-            Async<FSharpParseFileResults * FSharpCheckFileAnswer>
+        fileName: string * projectSnapshot: FSharpProjectSnapshot * ?userOpName: string * ?cancellationToken: CancellationToken ->
+            Task<FSharpParseFileResults * FSharpCheckFileAnswer>
 
     /// <summary>
     /// <para>Parse and typecheck all files in a project.</para>

@@ -4,6 +4,7 @@ open System.Threading
 open System.Threading.Tasks
 
 open System.Collections.Concurrent
+open System
 
 
 type AgentMessage<'Message, 'MessageNoReply, 'Reply> =
@@ -11,11 +12,12 @@ type AgentMessage<'Message, 'MessageNoReply, 'Reply> =
     | DoNotReply of 'MessageNoReply
 
 
+[<Sealed>]
 type TaskInbox<'Msg, 'MsgNoReply, 'Reply>() =
 
     let queue = ConcurrentQueue<AgentMessage<'Msg, 'MsgNoReply, 'Reply>>()
 
-    let messageNotifications = new SemaphoreSlim(0) // todo: Dispose?
+    let messageNotifications = new SemaphoreSlim(0)
 
     member _.PostAndAwaitReply(msg) =
         let replySource = TaskCompletionSource<'Reply>()
@@ -39,16 +41,22 @@ type TaskInbox<'Msg, 'MsgNoReply, 'Reply>() =
             | false, _ -> failwith "Message notifications broken"
     }
 
+    interface IDisposable with
+        member _.Dispose() = messageNotifications.Dispose()
 
+
+[<Sealed>]
 type TaskAgent<'Msg, 'MsgNoReply, 'Reply>(
     processMessage: ('MsgNoReply -> unit) -> 'Msg -> 'Reply,
     processMessageNoReply: ('MsgNoReply -> unit) -> 'MsgNoReply -> unit) =
-    let inbox = TaskInbox<'Msg, 'MsgNoReply, 'Reply>()
+    let inbox = new TaskInbox<'Msg, 'MsgNoReply, 'Reply>()
 
     let exceptionEvent = new Event<_>()
 
+    let mutable running = true
+
     let _loop = backgroundTask {
-        while true do
+        while running do
             match! inbox.Receive() with
             | ExpectsReply (msg, replySource) ->
                 try
@@ -59,7 +67,7 @@ type TaskAgent<'Msg, 'MsgNoReply, 'Reply>(
 
             | DoNotReply msg ->
                 try
-                    do processMessageNoReply inbox.Post msg
+                    processMessageNoReply inbox.Post msg
                 with ex ->
                     exceptionEvent.Trigger (msg, ex)
     }
@@ -68,7 +76,15 @@ type TaskAgent<'Msg, 'MsgNoReply, 'Reply>(
 
     member _.Status = _loop.Status
 
-    member _.PostAndAwaitReply(msg) = inbox.PostAndAwaitReply(msg)
+    member _.PostAndAwaitReply(msg) =
+        if not running then failwith "Agent has been disposed and is no longer processing messages"
+        inbox.PostAndAwaitReply(msg)
 
-    member _.Post(msg) = inbox.Post(msg)
+    member _.Post(msg) =
+        if not running then failwith "Agent has been disposed and is no longer processing messages"
+        inbox.Post(msg)
 
+    interface IDisposable with
+        member _.Dispose() =
+            running <- false
+            (inbox :> IDisposable).Dispose()

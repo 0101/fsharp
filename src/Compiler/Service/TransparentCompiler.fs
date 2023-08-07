@@ -418,7 +418,11 @@ type internal TransparentCompiler
                         ignore importsInvalidatedByTypeProvider
 #endif
                         return tcImports
-                    with exn ->
+                    with
+                    | :? OperationCanceledException ->
+                        // if it's been canceled then it shouldn't be needed anymore
+                        return frameworkTcImports
+                    | exn ->
                         Debug.Assert(false, sprintf "Could not BuildAllReferencedDllTcImports %A" exn)
                         diagnosticsLogger.Warning exn
                         return frameworkTcImports
@@ -997,7 +1001,7 @@ type internal TransparentCompiler
 
                 let node = NodeToTypeCheck.PhysicalFile fileIndex // TODO: is this correct?
 
-                let! ct = CancellableTask.getCurrentCancellationToken()
+                let! ct = CancellableTask.getCancellationToken()
 
                 let finisher =
                     CheckOneInputWithCallback
@@ -1157,7 +1161,7 @@ type internal TransparentCompiler
                         file
                     }
 
-                let! ct = CancellableTask.getCurrentCancellationToken()
+                let! ct = CancellableTask.getCancellationToken()
 
                 let! parsedInputs = files |> Seq.map (ComputeParseFile bootstrapInfo) |> Seq.map ((|>) ct) |> Task.WhenAll
 
@@ -1306,7 +1310,7 @@ type internal TransparentCompiler
                         "ComputeParseAndCheckAllFilesInProject"
                         [| Activity.Tags.project, projectSnapshot.ProjectFileName |> Path.GetFileName |]
 
-                let! ct = CancellableTask.getCurrentCancellationToken()
+                let! ct = CancellableTask.getCancellationToken()
 
                 let! parsedInputs =
                     bootstrapInfo.SourceFiles
@@ -1327,7 +1331,7 @@ type internal TransparentCompiler
 
     let ComputeProjectExtras (bootstrapInfo: BootstrapInfo) (projectSnapshot: FSharpProjectSnapshot) =
         ProjectExtrasCache.Get(
-            projectSnapshot.Key,
+            projectSnapshot.WithoutImplFilesThatHaveSignatures.Key,
             cancellableTask {
                 let! results, finalInfo = ComputeParseAndCheckAllFilesInProject bootstrapInfo projectSnapshot
 
@@ -1828,10 +1832,7 @@ type internal TransparentCompiler
             }
 
         member this.ParseAndCheckFileInProject(fileName: string, projectSnapshot: FSharpProjectSnapshot, userOpName: string) =
-            node {
-                let! ct = NodeCode.CancellationToken
-                return! this.ParseAndCheckFileInProject(fileName, projectSnapshot, userOpName) ct |> NodeCode.AwaitTask
-            }
+            this.ParseAndCheckFileInProject(fileName, projectSnapshot, userOpName)
 
         member this.ParseAndCheckProject(options: FSharpProjectOptions, userOpName: string) : NodeCode<FSharpCheckProjectResults> =
             node {

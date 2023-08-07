@@ -11,7 +11,7 @@ open System.Threading
 [<Fact>]
 let ``TaskAgent should process messages that expect a reply`` () =
     // Arrange
-    let agent = TaskAgent(
+    let agent = new TaskAgent<_,_,_>(
         processMessage = (fun _ msg -> msg + 1),
         processMessageNoReply = (fun _ _ -> ()))
 
@@ -26,7 +26,7 @@ let ``TaskAgent should process messages that do not expect a reply`` () =
     // Arrange
     let mutable messageProcessed = false
 
-    let agent = TaskAgent(
+    let agent = new TaskAgent<_,_,_>(
         processMessage = (fun _ msg -> msg + 1),
         processMessageNoReply = (fun _ _ -> messageProcessed <- true))
 
@@ -42,7 +42,7 @@ let ``TaskAgent should publish exceptions that occur while processing messages t
     // Arrange
     let mutable exceptionPublished = false
 
-    let agent = TaskAgent(
+    let agent = new TaskAgent<_,_,_>(
         processMessage = (fun _ msg -> msg + 1),
         processMessageNoReply = (fun _ _ -> failwith "Test exception"))
 
@@ -59,7 +59,7 @@ let ``TaskAgent should publish exceptions that occur while processing messages t
 let ``TaskAgent should not deadlock under heavy use`` () =
     // Arrange
     use messagesProcessed = new ThreadLocal<_>((fun () -> ResizeArray<int>()), true)
-    let agent = TaskAgent(
+    let agent = new TaskAgent<_,_,_>(
         processMessage = (fun post msg ->
             if msg > 0 then
                 post (msg + 1)

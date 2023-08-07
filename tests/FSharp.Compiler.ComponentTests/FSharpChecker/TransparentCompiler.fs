@@ -15,6 +15,7 @@ open Microsoft.CodeAnalysis
 open System
 open System.Threading.Tasks
 open System.Threading
+open Microsoft.VisualStudio.FSharp.Editor.CancellableTasks
 
 
 [<Fact>]
@@ -427,11 +428,195 @@ type ProjectRequest = ProjectAction * AsyncReplyChannel<SyntheticProject>
 [<RequireQualifiedAccess>]
 type SignatureFiles = Yes = 1 | No = 2 | Some = 3
 
+let fuzzingTest seed (project: SyntheticProject) = task {
+    let rng = System.Random seed
+
+    let checkingThreads = 4
+    let maxModificationDelayMs = 10
+    let maxCheckingDelayMs = 20
+    //let runTimeMs = 30000
+    let signatureFileModificationProbability = 0.25
+    let modificationLoopIterations = 10
+    let checkingLoopIterations = 30
+
+    let minCheckingTimeoutMs = 10
+    let maxCheckingTimeoutMs = 300
+
+    let builder = ProjectWorkflowBuilder(project, useTransparentCompiler = true, autoStart = false)
+    let checker = builder.Checker
+
+    // Force creation and caching of options
+    do! SaveAndCheckProject project checker |> Async.Ignore
+
+    let projectAgent = MailboxProcessor.Start(fun (inbox: MailboxProcessor<ProjectRequest>) ->
+        let rec loop project =
+            async {
+                let! action, reply = inbox.Receive()
+                let! project =
+                    match action with
+                    | Modify f -> async {
+                        let p = f project
+                        do! saveProject p false checker
+                        return p }
+                    | Get -> async.Return project
+                reply.Reply project
+                return! loop project
+            }
+        loop project)
+
+    let getProject () =
+        projectAgent.PostAndAsyncReply(pair Get)
+
+    let modifyProject f =
+        projectAgent.PostAndAsyncReply(pair(Modify f)) |> Async.Ignore
+
+    let modificationProbabilities = [
+        Update 1, 80
+        Update 2, 5
+        Update 10, 5
+        //Add, 2
+        //Remove, 1
+    ]
+
+    let modificationPicker = [|
+        for op, prob in modificationProbabilities do
+            for _ in 1 .. prob do
+                op
+    |]
+
+    let addComment s = $"{s}\n\n// {rng.NextDouble()}"
+    let modifyImplFile f = { f with ExtraSource = f.ExtraSource |> addComment }
+    let modifySigFile f = { f with SignatureFile = Custom (f.SignatureFile.CustomText |> addComment) }
+
+    let getRandomItem (xs: 'x array) = xs[rng.Next(0, xs.Length)]
+
+    let getRandomModification () = modificationPicker |> getRandomItem
+
+    let getRandomFile (project: SyntheticProject) = project.GetAllFiles() |> List.toArray |> getRandomItem
+
+    let log = new ThreadLocal<_>((fun () -> ResizeArray<_>()), true)
+
+    let modificationLoop = cancellableTask {
+        for _ in 1 .. modificationLoopIterations do
+            do! Task.Delay (rng.Next maxModificationDelayMs)
+            let modify project =
+                match getRandomModification() with
+                | Update n ->
+                    let files = Set [ for _ in 1..n -> getRandomFile project |> snd ]
+                    (project, files)
+                    ||> Seq.fold (fun p file ->
+                        let fileId = file.Id
+                        let project, file = project.FindInAllProjects fileId
+                        let opName, f =
+                            if file.HasSignatureFile && rng.NextDouble() < signatureFileModificationProbability
+                            then nameof modifySigFile, modifySigFile
+                            else nameof modifyImplFile, modifyImplFile
+                        log.Value.Add (DateTime.Now.Ticks, $"{project.Name} -> {fileId} |> {opName}")
+                        p |> updateFileInAnyProject fileId f)
+                | Add
+                | Remove ->
+                    // TODO:
+                    project
+            do! modifyProject modify
+    }
+
+
+    let addCacheEvent (name, jobEvent, key)=
+        //System.Diagnostics.Trace.TraceInformation $"{DateTime.Now.Ticks}| {name} {jobEvent} {key}"
+        if name = "TcIntermediate" then
+            log.Value.Add (DateTime.Now.Ticks, $"{jobEvent} {key}")
+
+    checker.CacheEvent.Add addCacheEvent
+
+    let checkingLoop n = cancellableTask {
+        for _ in 1 .. checkingLoopIterations do
+            let! project = getProject()
+            let p, file = project |> getRandomFile
+
+            let timeout = rng.Next(minCheckingTimeoutMs, maxCheckingTimeoutMs)
+            // TODO: timeout & cancelation
+            ignore timeout
+            log.Value.Add (DateTime.Now.Ticks, $"#{n} Started checking {file.Id} ({timeout} ms timeout)")
+            let! job = Async.StartChild(checker |> checkFile file.Id p)
+            try
+                let! result = job
+                log.Value.Add (DateTime.Now.Ticks, $"#{n} Checked {file.Id} %A{snd result}")
+                expectOk result ()
+            with ex ->
+                log.Value.Add (DateTime.Now.Ticks, $"#{n} Aborted check of {file.Id} %A{ex}")
+
+            do! Task.Delay (rng.Next maxCheckingDelayMs)
+    }
+
+    do! task {
+        let threads =
+            seq {
+                modificationLoop CancellationToken.None
+                ignore modificationLoop
+                for n in 1..checkingThreads do
+                    checkingLoop n CancellationToken.None
+            }
+
+        try
+            let! _x = threads |> Seq.skip 1 |> Task.WhenAll
+            ()
+        with
+            | e ->
+                let _log = log.Values |> Seq.collect id |> Seq.sortBy fst |> Seq.toArray
+                failwith $"Seed: {seed}\nException: %A{e}"
+    }
+    let _log = log.Values |> Seq.collect id |> Seq.sortBy fst |> Seq.toArray
+    builder.DeleteProjectDir()
+}
+
+
 [<Theory>]
 [<InlineData(SignatureFiles.Yes)>]
 [<InlineData(SignatureFiles.No)>]
 [<InlineData(SignatureFiles.Some)>]
 let Fuzzing signatureFiles =
+
+    let seed = 1106087513
+    let rng = System.Random(int seed)
+
+    let fileCount = 30
+    let maxDepsPerFile = 3
+
+    let fileName i = sprintf $"F%03d{i}"
+
+    //let extraCode = __SOURCE_DIRECTORY__ ++ ".." ++ ".." ++ ".." ++ "src" ++ "Compiler" ++ "Utilities" ++ "EditDistance.fs" |> File.ReadAllLines |> Seq.skip 5 |> String.concat "\n"
+    let extraCode = ""
+
+    let files =
+        [| for i in 1 .. fileCount do
+            let name = fileName i
+            let deps = [
+                for _ in 1 .. maxDepsPerFile do
+                    if i > 1 then
+                      fileName <| rng.Next(1, i) ]
+            let signature =
+                match signatureFiles with
+                | SignatureFiles.Yes -> AutoGenerated
+                | SignatureFiles.Some when rng.NextDouble() < 0.5 -> AutoGenerated
+                | _ -> No
+
+            { sourceFile name deps
+                with
+                    SignatureFile = signature
+                    ExtraSource = extraCode }
+        |]
+
+    let initialProject = SyntheticProject.Create("TCFuzzing", files)
+
+    let builder = ProjectWorkflowBuilder(initialProject, useTransparentCompiler = true, autoStart = false)
+    let checker = builder.Checker
+
+    let initialProject = initialProject |> absorbAutoGeneratedSignatures checker |> Async.RunSynchronously
+
+    fuzzingTest seed initialProject
+
+
+let Fuzzing' signatureFiles =
     //let seed = System.Random().Next()
     let seed = 1106087513
     let rng = System.Random(int seed)
@@ -456,14 +641,14 @@ let Fuzzing signatureFiles =
                 for _ in 1 .. maxDepsPerFile do
                     if i > 1 then
                       fileName <| rng.Next(1, i) ]
-            let signature = 
+            let signature =
                 match signatureFiles with
                 | SignatureFiles.Yes -> AutoGenerated
-                | SignatureFiles.Some when rng.NextDouble() < 0.5 -> AutoGenerated 
+                | SignatureFiles.Some when rng.NextDouble() < 0.5 -> AutoGenerated
                 | _ -> No
 
-            { sourceFile name deps 
-                with 
+            { sourceFile name deps
+                with
                     SignatureFile = signature
                     ExtraSource = extraCode }
         |]
@@ -481,9 +666,9 @@ let Fuzzing signatureFiles =
                 let! action, reply = inbox.Receive()
                 let! project =
                     match action with
-                    | Modify f -> async { 
+                    | Modify f -> async {
                         let p = f project
-                        do! saveProject p false checker 
+                        do! saveProject p false checker
                         return p }
                     | Get -> async.Return project
                 reply.Reply project
@@ -583,23 +768,9 @@ let Fuzzing signatureFiles =
 [<Theory>]
 [<InlineData true>]
 [<InlineData false>]
-let GiraffeFuzzing signatureFiles = task {
+let GiraffeFuzzing signatureFiles =
     //let seed = System.Random().Next()
     let seed = 1044159179
-    let rng = System.Random(int seed)
-
-    let getRandomItem (xs: 'x array) = xs[rng.Next(0, xs.Length)]
-
-    let checkingThreads = 4
-    let maxModificationDelayMs = 10
-    let maxCheckingDelayMs = 20
-    //let runTimeMs = 30000
-    let signatureFileModificationProbability = 0.25
-    let modificationLoopIterations = 10
-    let checkingLoopIterations = 30
-
-    let minCheckingTimeoutMs = 10
-    let maxCheckingTimeoutMs = 300
 
     let giraffe = if signatureFiles then "giraffe-signatures" else "Giraffe"
     let giraffeDir = __SOURCE_DIRECTORY__ ++ ".." ++ ".." ++ ".." ++ ".." ++ giraffe ++ "src" ++ "Giraffe"
@@ -609,134 +780,13 @@ let GiraffeFuzzing signatureFiles = task {
     let giraffeProject = { giraffeProject with OtherOptions = "--nowarn:FS3520"::giraffeProject.OtherOptions }
 
     let testsProject = SyntheticProject.CreateFromRealProject giraffeTestsDir
-    let testsProject = 
-        { testsProject 
-            with 
-                OtherOptions = "--nowarn:FS3520"::testsProject.OtherOptions 
+    let testsProject =
+        { testsProject
+            with
+                OtherOptions = "--nowarn:FS3520"::testsProject.OtherOptions
                 DependsOn = [ giraffeProject ]
                 NugetReferences = giraffeProject.NugetReferences @ testsProject.NugetReferences
                 }
 
-    let builder = ProjectWorkflowBuilder(testsProject, useTransparentCompiler = true, autoStart = false)
-    let checker = builder.Checker
+    fuzzingTest seed testsProject
 
-    // Force creation and caching of options
-    do! SaveAndCheckProject testsProject checker |> Async.Ignore
-
-    let projectAgent = MailboxProcessor.Start(fun (inbox: MailboxProcessor<ProjectRequest>) ->
-        let rec loop project =
-            async {
-                let! action, reply = inbox.Receive()
-                let! project =
-                    match action with
-                    | Modify f -> async {
-                        let p = f project
-                        do! saveProject p false checker
-                        return p }
-                    | Get -> async.Return project
-                reply.Reply project
-                return! loop project
-            }
-        loop testsProject)
-
-    let getProject () =
-        projectAgent.PostAndAsyncReply(pair Get)
-
-    let modifyProject f =
-        projectAgent.PostAndAsyncReply(pair(Modify f)) |> Async.Ignore
-
-    let modificationProbabilities = [
-        Update 1, 80
-        Update 2, 5
-        Update 10, 5
-        //Add, 2
-        //Remove, 1
-    ]
-
-    let modificationPicker = [|
-        for op, prob in modificationProbabilities do
-            for _ in 1 .. prob do
-                op
-    |]
-
-    let addComment s = $"{s}\n\n// {rng.NextDouble()}"
-    let modifyImplFile f = { f with ExtraSource = f.ExtraSource |> addComment }
-    let modifySigFile f = { f with SignatureFile = Custom (f.SignatureFile.CustomText |> addComment) }
-
-    let getRandomModification () = modificationPicker |> getRandomItem
-
-    let getRandomFile (project: SyntheticProject) = project.GetAllFiles() |> List.toArray |> getRandomItem
-
-    let log = new ThreadLocal<_>((fun () -> ResizeArray<_>()), true)
-
-    let modificationLoop = async {
-        for _ in 1 .. modificationLoopIterations do
-            do! Async.Sleep (rng.Next maxModificationDelayMs)
-            let modify project =
-                match getRandomModification() with
-                | Update n ->
-                    let files = Set [ for _ in 1..n -> getRandomFile project |> snd ]
-                    (project, files)
-                    ||> Seq.fold (fun p file ->
-                        let fileId = file.Id
-                        let project, file = project.FindInAllProjects fileId
-                        let opName, f = 
-                            if file.HasSignatureFile && rng.NextDouble() < signatureFileModificationProbability 
-                            then nameof modifySigFile, modifySigFile
-                            else nameof modifyImplFile, modifyImplFile
-                        log.Value.Add (DateTime.Now.Ticks, $"{project.Name} -> {fileId} |> {opName}")
-                        p |> updateFileInAnyProject fileId f)
-                | Add
-                | Remove ->
-                    // TODO:
-                    project
-            do! modifyProject modify
-    }
-
-
-    let addCacheEvent (name, jobEvent, key)=
-        //System.Diagnostics.Trace.TraceInformation $"{DateTime.Now.Ticks}| {name} {jobEvent} {key}"
-        if name = "TcIntermediate" then
-            log.Value.Add (DateTime.Now.Ticks, $"{jobEvent} {key}")
-
-    checker.CacheEvent.Add addCacheEvent
-
-    let checkingLoop n = async {
-        for _ in 1 .. checkingLoopIterations do
-            let! project = getProject()
-            let p, file = project |> getRandomFile
-
-            let timeout = rng.Next(minCheckingTimeoutMs, maxCheckingTimeoutMs)
-            // TODO: timeout & cancelation
-            ignore timeout
-            log.Value.Add (DateTime.Now.Ticks, $"#{n} Started checking {file.Id} ({timeout} ms timeout)")
-            let! job = Async.StartChild(checker |> checkFile file.Id p)
-            try
-                let! result = job
-                log.Value.Add (DateTime.Now.Ticks, $"#{n} Checked {file.Id} %A{snd result}")
-                expectOk result ()
-            with ex ->
-                log.Value.Add (DateTime.Now.Ticks, $"#{n} Aborted check of {file.Id} %A{ex}")
-
-            do! Async.Sleep (rng.Next maxCheckingDelayMs)
-    }
-
-    do! async {
-        let! threads =
-            seq {
-                Async.StartChild(modificationLoop)
-                ignore modificationLoop
-                for n in 1..checkingThreads do
-                    Async.StartChild(checkingLoop n)
-            }
-            |> Async.Parallel
-        try
-            do! threads |> Seq.skip 1 |> Async.Parallel |> Async.Ignore
-        with
-            | e -> 
-                let _log = log.Values |> Seq.collect id |> Seq.sortBy fst |> Seq.toArray
-                failwith $"Seed: {seed}\nException: %A{e}"
-    }
-    let _log = log.Values |> Seq.collect id |> Seq.sortBy fst |> Seq.toArray
-    builder.DeleteProjectDir()
-}

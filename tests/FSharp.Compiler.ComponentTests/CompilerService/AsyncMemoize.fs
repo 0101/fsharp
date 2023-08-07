@@ -13,7 +13,7 @@ open Microsoft.VisualStudio.FSharp.Editor.CancellableTasks
 
 
 [<Fact>]
-let ``Stack trace`` () = 
+let ``Stack trace`` () =
 
     let eventLog = ResizeArray()
 
@@ -33,47 +33,9 @@ let ``Stack trace`` () =
     //let _r2 = computation 10
 
     let result = memoize.Get(1, computation 1) CancellationToken.None
-    
+
     Assert.Equal(10, result.Result)
 
-
-[<Fact>]
-let ``Stack trace node`` () = task {
-
-    let computation key = node {
-        //do! Async.Sleep 1 |> NodeCode.AwaitAsync
-        
-        let! result = node {
-            //do! Async.Sleep 1 |> NodeCode.AwaitAsync
-            return key * 5
-        }
-        
-        return result * 2
-    }
-
-    let! rsult = computation 1 |> Async.AwaitNodeCode
-
-    Assert.Equal(10, rsult)
-}
-
-[<Fact>]
-let ``Stack trace task`` () = task {
-
-    let computation key = task {
-        //do! Task.Delay 1
-
-        let! result = task {
-            //do! Task.Delay 1
-            return key * 5
-        }
-
-        return result * 2
-    }
-
-    let! rsult = computation 1
-
-    Assert.Equal(10, rsult)
-}
 
 [<Fact>]
 let ``Basics``() =
@@ -165,7 +127,7 @@ let ``Job is restarted if first requestor cancels`` () =
             jobStarted.Set() |> ignore
 
             for _ in 1 .. 5 do
-                do! Task.Delay 1000
+                do! Task.Delay 100
 
             return key * 2
         }
@@ -188,7 +150,7 @@ let ``Job is restarted if first requestor cancels`` () =
 
         cts1.Cancel()
 
-        do! Task.Delay 1000
+        do! Task.Delay 100
         cts3.Cancel()
 
         let! result = _task2
@@ -211,7 +173,7 @@ let ``Job is restarted if first requestor cancels but keeps running if second re
             jobStarted.Set() |> ignore
 
             for _ in 1 .. 5 do
-                do! Task.Delay 1000
+                do! Task.Delay 100
 
             return key * 2
         }

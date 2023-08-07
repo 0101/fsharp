@@ -100,10 +100,11 @@ module private CheckerExtensions =
                 options: FSharpProjectOptions,
                 userOpName: string
             ) =
-            async {
+            cancellableTask {
                 let! projectSnapshot = getProjectSnapshot (document, options)
 
-                let! (parseResults, checkFileAnswer) = checker.ParseAndCheckFileInProject(document.FilePath, projectSnapshot, userOpName)
+                let! ct = CancellableTask.getCancellationToken ()
+                let! (parseResults, checkFileAnswer) = checker.ParseAndCheckFileInProject(document.FilePath, projectSnapshot, userOpName, ct)
 
                 return
                     match checkFileAnswer with

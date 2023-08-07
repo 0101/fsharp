@@ -41,7 +41,7 @@ let private projectRoot = "test-projects"
 let private defaultFunctionName = "f"
 
 type Reference = {
-    Name: string 
+    Name: string
     Version: string option }
 
 module ReferenceHelpers =
@@ -92,7 +92,8 @@ module ReferenceHelpers =
 
             { Name = matches.Groups.[1].Value
               Version = version
-              Path = DirectoryInfo(Path.Combine(matches.Groups[3].Value, version)) }))
+              Path = DirectoryInfo(Path.Combine(matches.Groups[3].Value, version)) }) 
+        |> Seq.toList)
 
     let getFrameworkReference (reference: Reference) =
 
@@ -565,7 +566,8 @@ module ProjectOperations =
             let absFileName = getFilePath project file
             let options = project.GetProjectOptions checker
             let! projectSnapshot = FSharpProjectSnapshot.FromOptions(options, getFileSnapshot project)
-            return! checker.ParseAndCheckFileInProject(absFileName, projectSnapshot)
+            let! ct = Async.CancellationToken
+            return! checker.ParseAndCheckFileInProject(absFileName, projectSnapshot, cancellationToken=ct) |> Async.AwaitTask
         }
 
     let checkFile fileId (project: SyntheticProject) (checker: FSharpChecker) =
@@ -723,7 +725,8 @@ module Helpers =
                 |> Seq.tryPick id
                 |> Option.defaultValue (-1, "", -1)
 
-            let! results = checker.ParseAndCheckFileInProject(fileName, snapshot)
+            let! ct = Async.CancellationToken
+            let! results = checker.ParseAndCheckFileInProject(fileName, snapshot, cancellationToken=ct) |> Async.AwaitTask
 
             let typeCheckResults = getTypeCheckResult results
 

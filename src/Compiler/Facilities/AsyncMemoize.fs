@@ -176,8 +176,8 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
 
     let cache =
         LruCache<'TKey, Job<'TValue>>(
-            keepStrongly = defaultArg keepStrongly 10,
-            keepWeakly = defaultArg keepWeakly 10,
+            keepStrongly = defaultArg keepStrongly 100,
+            keepWeakly = defaultArg keepWeakly 200,
             requiredToKeep = (function Running _ -> true | _ -> false),
             event = (function
                 | Evicted -> (fun k -> logEvent |> Option.iter (fun x -> x name (JobEvent.Evicted, k)))
@@ -281,19 +281,18 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
 
             else
                 // We need to restart the computation
-                cts.Token
-                |> cancellableTask {
-                    try
-                        log (Started, key)
-                        let! result = computation
-                        post (key, (JobCompleted result))
-                    with
-                    | :? OperationCanceledException ->
-                        post (key, CancelRequest)
-                    | ex ->
-                        post (key, (JobFailed ex))
-                }
-                |> ignore
+                Task.Run(fun () ->
+                    task {
+                        try
+                            log (Started, key)
+                            let! result = computation cts.Token
+                            post (key, (JobCompleted result))
+                        with
+                        | :? OperationCanceledException ->
+                            post (key, CancelRequest)
+                        | ex ->
+                            post (key, (JobFailed ex))
+                    }, cts.Token) |> ignore
 
         | OriginatorCanceled, None -> ()
 
@@ -350,12 +349,12 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
             ()
 
     let agent =
-        TaskAgent<'TKey * MemoizeRequest<'TValue>, 'TKey * StateUpdate<'TValue>, MemoizeReply<'TValue>>(processRequest, processStateUpdate)
+        new TaskAgent<'TKey * MemoizeRequest<'TValue>, 'TKey * StateUpdate<'TValue>, MemoizeReply<'TValue>>(processRequest, processStateUpdate)
 
     member _.Get(key, computation) =
 
         cancellableTask {
-            let! ct = CancellableTask.getCurrentCancellationToken()
+            let! ct = CancellableTask.getCancellationToken()
 
             match! agent.PostAndAwaitReply(key, GetOrCompute (computation, ct)) with
 
