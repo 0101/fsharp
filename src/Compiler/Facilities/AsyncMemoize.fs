@@ -51,29 +51,29 @@ type internal ValueLink<'T when 'T: not struct> =
     | Strong of 'T
     | Weak of WeakReference<'T>
 
-type internal LruCache<'TKey, 'TValue when 'TKey: equality and 'TValue: not struct>(keepStrongly, ?keepWeakly, ?requiredToKeep, ?event) =
+type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVersion: equality and 'TValue: not struct>(keepStrongly, ?keepWeakly, ?requiredToKeep, ?event) =
 
     let keepWeakly = defaultArg keepWeakly 100
     let requiredToKeep = defaultArg requiredToKeep (fun _ -> false)
     let event = defaultArg event (fun _ _ -> ())
 
-    let dictionary = Dictionary<_, _>()
+    let dictionary = Dictionary<'TKey, Dictionary<'TVersion, 'TValue>>()
 
     // Lists to keep track of when items were last accessed. First item is most recently accessed.
-    let strongList = LinkedList<'TKey * ValueLink<'TValue>>()
-    let weakList = LinkedList<'TKey * ValueLink<'TValue>>()
+    let strongList = LinkedList<'TKey * 'TVersion * ValueLink<'TValue>>()
+    let weakList = LinkedList<'TKey * 'TVersion * ValueLink<'TValue>>()
 
-    let rec removeCollected (node: LinkedListNode<'TKey * ValueLink<'TValue>>) =
+    let rec removeCollected (node: LinkedListNode<'TKey * 'TVersion * ValueLink<'TValue>>) =
         if node <> null then
-            let k, value = node.Value
+            let key, version, value = node.Value
             match value with
             | Weak w ->
                 let next = node.Next
                 match w.TryGetTarget() with
                 | false, _ ->
                     weakList.Remove node
-                    dictionary.Remove k |> ignore
-                    event Collected k
+                    dictionary[key].Remove version |> ignore
+                    event Collected (key, version)
                 | _ -> ()
                 removeCollected next
             | _ ->
@@ -120,7 +120,7 @@ type internal LruCache<'TKey, 'TValue when 'TKey: equality and 'TValue: not stru
         cutStrongListIfTooLong()
         node
 
-    member _.Set(key, value) = 
+    member _.Set(key, version, value) = 
         if dictionary.ContainsKey key then
             let node: LinkedListNode<_> = dictionary[key]
             match node.Value with
@@ -136,7 +136,7 @@ type internal LruCache<'TKey, 'TValue when 'TKey: equality and 'TValue: not stru
             let node = pushValueToTop key value
             dictionary[key] <- node
 
-    member _.TryGet(key) = 
+    member _.TryGet(key, version) = 
 
         match dictionary.TryGetValue key with
         | true, node ->
