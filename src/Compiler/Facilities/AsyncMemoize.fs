@@ -86,10 +86,10 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
             let mutable node = weakList.Last
             while weakList.Count > keepWeakly && node <> null do
                 let previous = node.Previous
-                let key = fst node.Value
+                let key, version, _ = node.Value
                 weakList.Remove node
-                dictionary.Remove key |> ignore
-                event Evicted key
+                dictionary[key].Remove version |> ignore
+                event Evicted (key, version)
                 node <- previous
 
     let cutStrongListIfTooLong() =
