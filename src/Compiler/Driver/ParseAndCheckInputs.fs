@@ -1488,6 +1488,7 @@ let CheckOneInputWithCallback
     : Cancellable<Finisher<NodeToTypeCheck, TcState, PartialResult>> =
     cancellable {
         try
+            printfn "About to type-check %A" node
             CheckSimulateException tcConfig
 
             let m = input.Range
