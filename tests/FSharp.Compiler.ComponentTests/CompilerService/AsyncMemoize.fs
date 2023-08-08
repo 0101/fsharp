@@ -102,10 +102,14 @@ let ``We can cancel a job`` () =
         jobStarted.WaitOne() |> ignore
         do! memoize.Sync()
 
+        jobStarted.Reset() |> ignore
+
         Assert.Equal<(JobEvent * int) array>([| Started, key |], eventLog |> Seq.toArray )
 
         cts1.Cancel()
         cts2.Cancel()
+
+        jobStarted.WaitOne() |> ignore
 
         do! memoize.Sync()
 
@@ -113,6 +117,7 @@ let ``We can cancel a job`` () =
 
         cts3.Cancel()
 
+        do! Task.Delay 100
         do! memoize.Sync() 
 
         Assert.Equal<(JobEvent * int) array>([| Started, key; Started, key; Canceled, key |], eventLog |> Seq.toArray )
@@ -225,11 +230,11 @@ let ``Stress test`` () =
     let iterations = 30
     let maxDuration = 100
     let minTimeout = 0
-    let maxTimeout = 1000
+    let maxTimeout = 500
     let exceptionProbability = 0.01
     let gcProbability = 0.1
     let stepMs = 10
-    let keyCount = 20
+    let keyCount = rng.Next(5, 200)
     let keys = [| 1 .. keyCount |]
 
     let testTimeoutMs = threads * iterations * maxDuration / 2
@@ -330,7 +335,7 @@ let ``Stress test`` () =
     if not (test.Wait testTimeoutMs) then failwith "Test timed out - most likely deadlocked"
 
     Assert.Equal (threads * iterations, started)
-    // Assert.Equal<int * int * int * int * int>((0,0,0,0,0),(started, completed, canceled, failed, timeout))
+    //Assert.Equal<int * int * int * int * int>((0,0,0,0,0),(started, completed, canceled, failed, timeout))
     Assert.Equal (started, completed + canceled + failed + timeout)
 
     Assert.True ((float completed) > ((float started) * 0.1), "Less than 10% completed jobs")

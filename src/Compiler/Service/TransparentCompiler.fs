@@ -268,7 +268,7 @@ type internal TransparentCompiler
     let cacheEvent = new Event<string * JobEvent * obj>()
     let triggerCacheEvent name (e, k) = cacheEvent.Trigger(name, e, k)
 
-    let ParseFileCache = AsyncMemoize(logEvent=triggerCacheEvent, name="ParseFile")
+    let ParseFileCache = AsyncMemoize(keepStrongly=1000, keepWeakly=2000, logEvent=triggerCacheEvent, name="ParseFile")
 
     let ParseAndCheckFileInProjectCache =
         AsyncMemoize(logEvent=triggerCacheEvent, name="ParseAndCheckFileInProject")

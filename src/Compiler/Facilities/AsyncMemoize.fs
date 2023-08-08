@@ -229,38 +229,46 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
     let log event =
         logEvent |> Option.iter (fun x -> x name event)
 
+    let gate = obj()
+
     let processRequest post (key, msg) =
+        
+        lock (gate) (fun () ->
+                
+            let cached = cache.TryGet key
 
-        let cached = cache.TryGet key
+            // System.Diagnostics.Trace.TraceInformation $"[{key}] GetOrCompute {cached}"
 
-        // System.Diagnostics.Trace.TraceInformation $"[{key}] GetOrCompute {cached}"
+            match msg, cached with
+            | Sync, _ -> New
+            | GetOrCompute _, Some (Completed result) -> Existing (Task.FromResult result)
+            | GetOrCompute(_, ct), Some (Running (tcs, _, _)) ->
+                incrRequestCount key
 
-        match msg, cached with
-        | Sync, _ -> New
-        | GetOrCompute _, Some (Completed result) -> Existing (Task.FromResult result)
-        | GetOrCompute(_, ct), Some (Running (tcs, _, _)) ->
-            incrRequestCount key
+                ct.Register(fun _ ->
+                    let _name = name
+                    post (key, CancelRequest))
+                    |> saveRegistration key
 
-            ct.Register(fun _ ->
-                let _name = name
-                post (key, CancelRequest))
-                |> saveRegistration key
+                Existing tcs.Task
 
-            Existing tcs.Task
+            | GetOrCompute(computation, ct), None ->
+                incrRequestCount key
 
-        | GetOrCompute(computation, ct), None ->
-            incrRequestCount key
+                ct.Register(fun _ ->
+                    let _name = name
+                    post (key, OriginatorCanceled))
+                    |> saveRegistration key
 
-            ct.Register(fun _ ->
-                let _name = name
-                post (key, OriginatorCanceled))
-                |> saveRegistration key
+                cache.Set(key, (Running(TaskCompletionSource(), (new CancellationTokenSource()), computation)))
 
-            cache.Set(key, (Running(TaskCompletionSource(), (new CancellationTokenSource()), computation)))
-
-            New
+                New
+        )
 
     let processStateUpdate post (key, action: StateUpdate<_>) =
+
+        lock gate (fun () ->
+
 
         let cached = cache.TryGet key
 
@@ -348,30 +356,34 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
             //failwith "Invalid state: Canceled Completed job"
             ()
 
-    let agent =
-        new TaskAgent<'TKey * MemoizeRequest<'TValue>, 'TKey * StateUpdate<'TValue>, MemoizeReply<'TValue>>(processRequest, processStateUpdate)
+        )
+
+    //let agent =
+    //    new TaskAgent<'TKey * MemoizeRequest<'TValue>, 'TKey * StateUpdate<'TValue>, MemoizeReply<'TValue>>(processRequest, processStateUpdate)
+
+    let rec post msg =
+        Task.Run(fun () -> processStateUpdate post msg) |> ignore
 
     member _.Get(key, computation) =
 
         cancellableTask {
             let! ct = CancellableTask.getCancellationToken()
 
-            match! agent.PostAndAwaitReply(key, GetOrCompute (computation, ct)) with
-
+            match processRequest post (key, GetOrCompute(computation, ct)) with
             | New ->
 
                 try
                     log (Started, key)
                     let! result = computation
-                    agent.Post (key, (JobCompleted result))
+                    post (key, (JobCompleted result))
                     return result
                 with
                 | :? TaskCanceledException
                 | :? OperationCanceledException as ex ->
-                    //agent.Post (key, OriginatorCanceled)
+                    //post (key, OriginatorCanceled)
                     return raise ex
                 | ex ->
-                    agent.Post (key, (JobFailed ex))
+                    post (key, (JobFailed ex))
                     return raise ex
 
             | Existing job -> return! job
@@ -383,8 +395,11 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
     //    computation
 
     member _.Sync() =
-        task {
+
+        Task.CompletedTask
+
+        (* task {
             let! _x = agent.PostAndAwaitReply (Unchecked.defaultof<_>, (Sync))
             return ()
-        }
+        } *)
 
