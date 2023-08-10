@@ -44,21 +44,21 @@ type DelayedILModuleReader =
 /// <summary>Unused in this API</summary>
 type public FSharpUnresolvedReferencesSet = internal FSharpUnresolvedReferencesSet of UnresolvedAssemblyReference list
 
-type internal FSharpFileKey = string * string
+//type internal FSharpFileKey = string * string
 
-type internal FSharpProjectSnapshotKey =
-    { ProjectFileName: string
-      SourceFiles: FSharpFileKey list
-      OtherOptions: string list
-      ReferencedProjects: FSharpProjectSnapshotKey list
+//type internal FSharpProjectSnapshotKey =
+//    { ProjectFileName: string
+//      SourceFiles: FSharpFileKey list
+//      OtherOptions: string list
+//      ReferencedProjects: FSharpProjectSnapshotKey list
 
-      // Do we need these?
-      IsIncompleteTypeCheckEnvironment: bool
-      UseScriptResolutionRules: bool }
+//      // Do we need these?
+//      IsIncompleteTypeCheckEnvironment: bool
+//      UseScriptResolutionRules: bool }
 
-    member LastFile: FSharpFileKey
+//    member LastFile: FSharpFileKey
 
-    interface ICacheKey<string>
+//    interface ICacheKey<string>
 
 [<NoComparison; CustomEquality>]
 type FSharpFileSnapshot =
@@ -66,9 +66,9 @@ type FSharpFileSnapshot =
       Version: string
       GetSource: unit -> Task<ISourceText> }
 
-    member internal Key: FSharpFileKey
+    member internal Key: ICacheKey<string, string>
 
-    interface ICacheKey<string>
+    interface ICacheKey<string, string>
 
 
 [<NoComparison>]
@@ -144,7 +144,9 @@ type FSharpProjectSnapshot =
     /// A snapshot of the same project with file versions removed.
     member WithoutFileVersions: FSharpProjectSnapshot
 
-    member internal Key: FSharpProjectSnapshotKey
+    member internal Key: ICacheKey<string, byte array>
+
+    interface ICacheKey<string, byte array>
 
 and [<NoComparison; CustomEquality>] public FSharpReferencedProjectSnapshot =
     internal
@@ -168,6 +170,8 @@ and [<NoComparison; CustomEquality>] public FSharpReferencedProjectSnapshot =
     /// <param name="options">The Project Options for this F# project</param>
     static member CreateFSharp:
         projectOutputFile: string * options: FSharpProjectSnapshot -> FSharpReferencedProjectSnapshot
+
+    member internal Key: ICacheKey<string>
 
 /// <summary>A set of information describing a project or script build configuration.</summary>
 type public FSharpProjectOptions =

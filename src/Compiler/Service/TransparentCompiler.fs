@@ -830,13 +830,16 @@ type internal TransparentCompiler
         )
 
     let ComputeParseFile bootstrapInfo (file: FSharpFile) =
-        let key = file.Source.FileName, file.IsLastCompiland, file.IsExe
-        let version = file.Source.Version
-
-        let k =
-            { new ICacheKey<_>
-                with member _.GetHash() = key.GetHashCode().ToString()
-                     member _.GetVersion() = version }
+        
+        let key =
+            { new ICacheKey<_> with
+                member _.GetName() = file.Source.FileName 
+                member _.GetKey() = 
+                    Md5Hasher.empty
+                    |> Md5Hasher.addKey file.Source
+                    |> Md5Hasher.addBool file.IsLastCompiland
+                    |> Md5Hasher.addBool file.IsExe
+                member _.GetVersion() = file.Source.Version }
 
         ParseFileCache.Get(
             key,

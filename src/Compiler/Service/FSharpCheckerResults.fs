@@ -112,29 +112,29 @@ type DelayedILModuleReader =
             }
         | _ -> cancellable.Return(Some this.result)
 
-type FSharpFileKey = string * string
+//type FSharpFileKey = string * string
 
-// TODO: use stamp if we have it?
-[<DebuggerDisplay("{DebuggerDisplay}")>]
-type FSharpProjectSnapshotKey =
-    {
-        ProjectFileName: string
-        SourceFiles: FSharpFileKey list
-        OtherOptions: string list
-        ReferencedProjects: FSharpProjectSnapshotKey list
+//// TODO: use stamp if we have it?
+//[<DebuggerDisplay("{DebuggerDisplay}")>]
+//type FSharpProjectSnapshotKey =
+//    {
+//        ProjectFileName: string
+//        SourceFiles: FSharpFileKey list
+//        OtherOptions: string list
+//        ReferencedProjects: FSharpProjectSnapshotKey list
 
-        // Do we need these?
-        IsIncompleteTypeCheckEnvironment: bool
-        UseScriptResolutionRules: bool
-    }
+//        // Do we need these?
+//        IsIncompleteTypeCheckEnvironment: bool
+//        UseScriptResolutionRules: bool
+//    }
 
-    member this.LastFile = this.SourceFiles |> List.last
+//    member this.LastFile = this.SourceFiles |> List.last
 
-    member this.DebuggerDisplay =
-        let path, version = this.LastFile
-        $"{Path.GetFileNameWithoutExtension this.ProjectFileName} {Path.GetFileName path} {version}"
+//    member this.DebuggerDisplay =
+//        let path, version = this.LastFile
+//        $"{Path.GetFileNameWithoutExtension this.ProjectFileName} {Path.GetFileName path} {version}"
 
-    override this.ToString() = this.DebuggerDisplay
+//    override this.ToString() = this.DebuggerDisplay
 
 [<NoComparison; CustomEquality>]
 type FSharpFileSnapshot =
@@ -143,8 +143,6 @@ type FSharpFileSnapshot =
         Version: string
         GetSource: unit -> Task<ISourceText>
     }
-
-    member this.Key = this.FileName, this.Version
 
     member this.IsSignatureFile = this.FileName.ToLower().EndsWith(".fsi")
 
@@ -159,10 +157,12 @@ type FSharpFileSnapshot =
         let dir = Path.GetDirectoryName(this.FileName).Split(Path.DirectorySeparatorChar) |> Array.last
         $"{dir}/{Path.GetFileName(this.FileName)}"
 
-    interface ICacheKey<string> with
-        member this.GetVersion(): string = this.Version
-            
-        member this.GetHash() = "hello"
+    member this.Key = this :> ICacheKey<_, _>
+
+    interface ICacheKey<string, string> with
+        member this.GetLabel() = this.ToString()
+        member this.GetKey() = this.FileName 
+        member this.GetVersion() = this.Version
 
 
 [<NoComparison>]
@@ -255,18 +255,18 @@ type FSharpProjectSnapshot =
             let snapshot = this.WithoutImplFilesThatHaveSignatures
             { snapshot with SourceFiles = snapshot.SourceFiles @ [lastFile] }
 
-    member this.Key =
-        {
-            ProjectFileName = this.ProjectFileName
-            SourceFiles = this.SourceFiles |> List.map (fun x -> x.Key)
-            OtherOptions = this.OtherOptions
-            ReferencedProjects =
-                this.ReferencedProjects
-                |> List.map (function
-                    | FSharpReference (_, x) -> x.Key)
-            IsIncompleteTypeCheckEnvironment = this.IsIncompleteTypeCheckEnvironment
-            UseScriptResolutionRules = this.UseScriptResolutionRules
-        }
+    //member this.Key' =
+    //    {
+    //        ProjectFileName = this.ProjectFileName
+    //        SourceFiles = this.SourceFiles |> List.map (fun x -> x.Key)
+    //        OtherOptions = this.OtherOptions
+    //        ReferencedProjects =
+    //            this.ReferencedProjects
+    //            |> List.map (function
+    //                | FSharpReference (_, x) -> x.Key)
+    //        IsIncompleteTypeCheckEnvironment = this.IsIncompleteTypeCheckEnvironment
+    //        UseScriptResolutionRules = this.UseScriptResolutionRules
+    //    }
 
     member this.SourceFileNames = this.SourceFiles |> List.map (fun x -> x.FileName)
 
@@ -276,7 +276,22 @@ type FSharpProjectSnapshot =
         }
 
     override this.ToString() =
-        "FSharpProjectSnapshot(" + this.ProjectFileName + ")"
+        Path.GetFileNameWithoutExtension this.ProjectFileName 
+        |> sprintf "FSharpProjectSnapshot(%s)"
+
+    member this.Key = this :> ICacheKey<_, _>
+
+    interface ICacheKey<string, byte array> with
+        member this.GetLabel() = this.ToString()
+        member this.GetKey() = this.ProjectFileName
+        member this.GetVersion() = 
+            Md5Hasher.empty
+            |> Md5Hasher.addString this.ProjectFileName
+            |> Md5Hasher.addStrings (this.SourceFiles |> Seq.map (fun x -> x.Version))
+            |> Md5Hasher.addStrings this.OtherOptions
+            |> Md5Hasher.addVersions (this.ReferencedProjects |> Seq.map (fun x -> x.Key))
+            |> Md5Hasher.addBool this.IsIncompleteTypeCheckEnvironment
+            |> Md5Hasher.addBool this.UseScriptResolutionRules
 
 and [<NoComparison; CustomEquality>] public FSharpReferencedProjectSnapshot =
     internal
@@ -313,6 +328,10 @@ and [<NoComparison; CustomEquality>] public FSharpReferencedProjectSnapshot =
         | _ -> false
 
     override this.GetHashCode() = this.OutputFile.GetHashCode()
+
+    member this.Key = 
+        match this with
+        | FSharpReference (_, snapshot) -> snapshot.Key
 
 [<RequireQualifiedAccess; NoComparison; CustomEquality>]
 type FSharpReferencedProject =

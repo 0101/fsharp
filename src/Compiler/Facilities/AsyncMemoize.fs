@@ -60,12 +60,12 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
     let dictionary = Dictionary<'TKey, Dictionary<'TVersion, _>>()
 
     // Lists to keep track of when items were last accessed. First item is most recently accessed.
-    let strongList = LinkedList<'TKey * 'TVersion * ValueLink<'TValue>>()
-    let weakList = LinkedList<'TKey * 'TVersion * ValueLink<'TValue>>()
+    let strongList = LinkedList<'TKey * 'TVersion * string * ValueLink<'TValue>>()
+    let weakList = LinkedList<'TKey * 'TVersion * string * ValueLink<'TValue>>()
 
-    let rec removeCollected (node: LinkedListNode<'TKey * 'TVersion * ValueLink<'TValue>>) =
+    let rec removeCollected (node: LinkedListNode<_>) =
         if node <> null then
-            let key, version, value = node.Value
+            let key, version, label, value = node.Value
             match value with
             | Weak w ->
                 let next = node.Next
@@ -75,7 +75,7 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
                     dictionary[key].Remove version |> ignore
                     if dictionary[key].Count = 0 then
                         dictionary.Remove key |> ignore
-                    event Collected (key, version)
+                    event Collected (label, key, version)
                 | _ -> ()
                 removeCollected next
             | _ ->
@@ -88,12 +88,12 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
             let mutable node = weakList.Last
             while weakList.Count > keepWeakly && node <> null do
                 let previous = node.Previous
-                let key, version, _ = node.Value
+                let key, version, label, _ = node.Value
                 weakList.Remove node
                 dictionary[key].Remove version |> ignore
                 if dictionary[key].Count = 0 then
                     dictionary.Remove key |> ignore
-                event Evicted (key, version)
+                event Evicted (label, key, version)
                 node <- previous
 
     let cutStrongListIfTooLong() =
@@ -101,30 +101,30 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
         while strongList.Count > keepStrongly && node <> null do
             let previous = node.Previous
             match node.Value with
-            | _, _, Strong v when requiredToKeep v -> ()
-            | key, version, Strong v ->
+            | _, _, _, Strong v when requiredToKeep v -> ()
+            | key, version, label, Strong v ->
                 strongList.Remove node
-                node.Value <- key, version, Weak (WeakReference<_> v)
+                node.Value <- key, version, label, Weak (WeakReference<_> v)
                 weakList.AddFirst node
-                event Weakened (key, version)
-            | _key, _version, _ -> failwith "Invalid state, weak reference in strong list"
+                event Weakened (label, key, version)
+            | _key, _version, _label, _ -> failwith "Invalid state, weak reference in strong list"
             node <- previous
         cutWeakListIfTooLong()
 
     let pushNodeToTop (node: LinkedListNode<_>) =
         match node.Value with
-        | _, _, Strong _ ->
+        | _, _, _, Strong _ ->
             strongList.AddFirst node
             cutStrongListIfTooLong()
-        | _, _, Weak _ ->
+        | _, _, _, Weak _ ->
             failwith "Invalid operation, pusing weak reference to strong list"
 
-    let pushValueToTop key version value =
-        let node = strongList.AddFirst(value=(key, version, Strong value))
+    let pushValueToTop key version label value =
+        let node = strongList.AddFirst(value=(key, version, label, Strong value))
         cutStrongListIfTooLong()
         node
 
-    member _.Set(key, version, value) =
+    member _.Set(key, version, label, value) =
         match dictionary.TryGetValue key with
         | true, versionDict ->
 
@@ -134,31 +134,31 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
 
                 let node: LinkedListNode<_> = versionDict[version]
                 match node.Value with
-                | _, _, Strong _ -> strongList.Remove node
-                | _, _, Weak _ ->
+                | _, _, _, Strong _ -> strongList.Remove node
+                | _, _, _, Weak _ ->
                     weakList.Remove node
-                    event Strengthened (key, version)
+                    event Strengthened (label, key, version)
 
-                node.Value <- key, version, Strong value
+                node.Value <- key, version, label, Strong value
                 pushNodeToTop node
 
             else
-                let node = pushValueToTop key version value
+                let node = pushValueToTop key version label value
                 versionDict[version] <- node
                 // weaken all other versions
                 for otherVersion in versionDict.Keys do
                     if otherVersion <> version then
                         let node = versionDict[otherVersion]
                         match node.Value with
-                        | _, _, Strong value ->
+                        | _, _, _, Strong value ->
                             strongList.Remove node
-                            node.Value <- key, otherVersion, Weak (WeakReference<_> value)
+                            node.Value <- key, otherVersion, label, Weak (WeakReference<_> value)
                             weakList.AddFirst node
-                            event Weakened (key, otherVersion)
-                        | _, _, Weak _ -> ()
+                            event Weakened (label, key, otherVersion)
+                        | _, _, _, Weak _ -> ()
 
         | false, _ ->
-            let node = pushValueToTop key version value
+            let node = pushValueToTop key version label value
             dictionary[key] <- Dictionary()
             dictionary[key][version] <- node
 
@@ -171,17 +171,17 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
             | false, _ -> None
             | true, node ->
                 match node.Value with
-                | _, _, Strong v ->
+                | _, _, _, Strong v ->
                     strongList.Remove node
                     pushNodeToTop node
                     Some v
 
-                | _, _, Weak w ->
+                | _, _, label, Weak w ->
                     match w.TryGetTarget() with
                     | true, value ->
                         weakList.Remove node
-                        let node = pushValueToTop key version value
-                        event Strengthened (key, version)
+                        let node = pushValueToTop key version label value
+                        event Strengthened (label, key, version)
                         versionDict[version] <- node
                         Some value
                     | _ ->
@@ -189,7 +189,7 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
                         versionDict.Remove version |> ignore
                         if versionDict.Count = 0 then
                             dictionary.Remove key |> ignore
-                        event Collected (key, version)
+                        event Collected (label, key, version)
                         None
 
     member _.Remove(key, version) =
@@ -202,8 +202,8 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
                 if versionDict.Count = 0 then
                     dictionary.Remove key |> ignore
                 match node.Value with
-                | _, _, Strong _ -> strongList.Remove node
-                | _, _, Weak _ -> weakList.Remove node
+                | _, _, _, Strong _ -> strongList.Remove node
+                | _, _, _, Weak _ -> weakList.Remove node
             | _ -> ()
 
     //member this.Set(key, value) =
@@ -216,18 +216,65 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
     //    this.Remove(key, Unchecked.defaultof<_>)
 
 
-type internal ICacheKey<'TVersion> =
-    abstract member GetHash: unit -> string
+type internal ICacheKey<'TKey, 'TVersion> =
+    abstract member GetKey: unit -> 'TKey
     abstract member GetVersion: unit -> 'TVersion
-    abstract member GetName: unit -> string
+    abstract member GetLabel: unit -> string
 
-type private KeyData<'TVersion> =
-    { Name: string; Hash: string; Version: 'TVersion }
+type private KeyData<'TKey, 'TVersion> =
+    { Label: string; Key: 'TKey; Version: 'TVersion }
 
-    // Debug-friendly cache key
-    member this.CacheKey = $"{this.Name}|{this.Hash}"
+module internal Md5Hasher =
 
-type internal AsyncMemoize<'TVersion, 'TValue when 'TVersion: equality>(?keepStrongly, ?keepWeakly, ?logEvent: (string -> JobEvent * (string * 'TVersion) -> unit), ?name: string) =
+    let private md5 = System.Security.Cryptography.MD5.Create()
+
+    let empty: byte array = Array.empty
+
+    let addString (s: string) (bytes: byte array) =
+        let sbytes = System.Text.Encoding.UTF8.GetBytes(s)
+        Array.append bytes sbytes |> md5.ComputeHash
+
+    let addBytes (bytes: byte array) (bytes2: byte array) =
+        Array.append bytes bytes2 |> md5.ComputeHash
+
+    let addInt (i: int) (bytes: byte array) =
+        let bytes2 = BitConverter.GetBytes(i)
+        Array.append bytes bytes2 |> md5.ComputeHash
+
+    let addList (list: 'T list) (bytes: byte array) (f: 'T -> byte array) =
+        let bytes2 = list |> List.map f |> Array.concat
+        Array.append bytes bytes2 |> md5.ComputeHash
+
+    let addStrings (strings: string seq) (bytes: byte array) =
+        let bytes2 = strings |> Seq.map System.Text.Encoding.UTF8.GetBytes |> Array.concat
+        Array.append bytes bytes2 |> md5.ComputeHash
+
+    let addBytes' (bytes': byte array seq) (bytes: byte array) =
+        let bytes2 = bytes' |> Array.concat
+        Array.append bytes bytes2 |> md5.ComputeHash
+
+    let addKey (key: ICacheKey<byte array, _>) (bytes: byte array) =
+        let bytes2 = key.GetKey()
+        Array.append bytes bytes2 |> md5.ComputeHash
+
+    let addKeys<'a, 'b when 'a :> ICacheKey<byte array, 'b>> (keys: 'a seq) (bytes: byte array) =
+        let bytes2 = keys |> Seq.map (fun x -> x.GetKey()) |> Array.concat
+        Array.append bytes bytes2 |> md5.ComputeHash
+
+    let addVersion (version: ICacheKey<_, byte array>) (bytes: byte array) =
+        let bytes2 = version.GetVersion()
+        Array.append bytes bytes2 |> md5.ComputeHash
+
+    let addVersions<'a, 'b when 'a :> ICacheKey<'b, byte array>> (versions: 'a seq) (bytes: byte array) =
+        let bytes2 = versions |> Seq.map (fun x -> x.GetVersion()) |> Array.concat
+        Array.append bytes bytes2 |> md5.ComputeHash
+
+    let addBool (b: bool) (bytes: byte array) =
+        let bytes2 = BitConverter.GetBytes(b)
+        Array.append bytes bytes2 |> md5.ComputeHash
+    
+
+type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TVersion: equality>(?keepStrongly, ?keepWeakly, ?logEvent: (string -> JobEvent * (string * 'TVersion) -> unit), ?name: string) =
 
     let name = defaultArg name "N/A"
 
@@ -255,7 +302,7 @@ type internal AsyncMemoize<'TVersion, 'TValue when 'TVersion: equality>(?keepStr
     //            | _ -> false
     //    )
 
-    let requestCounts = Dictionary<KeyData<_>, int>()
+    let requestCounts = Dictionary<KeyData<_, _>, int>()
     let cancellationRegistrations = Dictionary<_, _>()
 
     let saveRegistration key registration =
@@ -283,16 +330,16 @@ type internal AsyncMemoize<'TVersion, 'TValue when 'TVersion: equality>(?keepStr
         if requestCounts.ContainsKey key then
             requestCounts[key] <- requestCounts[key] - 1
 
-    let log (eventType, keyData: KeyData<_>) =
-        logEvent |> Option.iter (fun x -> x name (eventType, (keyData.CacheKey, keyData.Version)))
+    let log (eventType, keyData: KeyData<_, _>) =
+        logEvent |> Option.iter (fun x -> x name (eventType, (keyData.Key, keyData.Version)))
 
     let gate = obj()
 
-    let processRequest post (key: KeyData<_>, msg) =
+    let processRequest post (key: KeyData<_, _>, msg) =
 
         lock gate (fun () ->
 
-            let cached = cache.TryGet (key.CacheKey, key.Version)
+            let cached = cache.TryGet (key.Key, key.Version)
 
             // System.Diagnostics.Trace.TraceInformation $"[{key}] GetOrCompute {cached}"
 
@@ -317,17 +364,17 @@ type internal AsyncMemoize<'TVersion, 'TValue when 'TVersion: equality>(?keepStr
                     post (key, OriginatorCanceled))
                     |> saveRegistration key
 
-                cache.Set(key.CacheKey, key.Version, (Running(TaskCompletionSource(), (new CancellationTokenSource()), computation)))
+                cache.Set(key.Key, key.Version, key.Label, (Running(TaskCompletionSource(), (new CancellationTokenSource()), computation)))
 
                 New
         )
 
-    let processStateUpdate post (key: KeyData<_>, action: StateUpdate<_>) =
+    let processStateUpdate post (key: KeyData<_, _>, action: StateUpdate<_>) =
 
         lock gate (fun () ->
 
 
-        let cached = cache.TryGet (key.CacheKey, key.Version)
+        let cached = cache.TryGet (key.Key, key.Version)
 
         // System.Diagnostics.Trace.TraceInformation $"[{key}] {action} {cached}"
 
@@ -340,7 +387,7 @@ type internal AsyncMemoize<'TVersion, 'TValue when 'TVersion: equality>(?keepStr
                 cancelRegistration key
                 cts.Cancel()
                 tcs.TrySetCanceled() |> ignore
-                cache.Remove (key.CacheKey, key.Version)
+                cache.Remove (key.Key, key.Version)
                 requestCounts.Remove key |> ignore
                 log (Canceled, key)
 
@@ -370,7 +417,7 @@ type internal AsyncMemoize<'TVersion, 'TValue when 'TVersion: equality>(?keepStr
                 cancelRegistration key
                 cts.Cancel()
                 tcs.TrySetCanceled() |> ignore
-                cache.Remove (key.CacheKey, key.Version)
+                cache.Remove (key.Key, key.Version)
                 requestCounts.Remove key |> ignore
                 log (Canceled, key)
 
@@ -380,14 +427,14 @@ type internal AsyncMemoize<'TVersion, 'TValue when 'TVersion: equality>(?keepStr
         | JobFailed ex, Some (Running (tcs, _cts, _c)) ->
             // TODO: should we restart if there are more requests?
             cancelRegistration key
-            cache.Remove (key.CacheKey, key.Version)
+            cache.Remove (key.Key, key.Version)
             requestCounts.Remove key |> ignore
             log (Failed, key)
             tcs.TrySetException ex |> ignore
 
         | JobCompleted result, Some (Running (tcs, _cts, _c)) ->
             cancelRegistration key
-            cache.Set(key.CacheKey, key.Version, (Completed result))
+            cache.Set(key.Key, key.Version, key.Label, (Completed result))
             requestCounts.Remove key |> ignore
             log (Finished, key)
             tcs.SetResult result
@@ -421,9 +468,9 @@ type internal AsyncMemoize<'TVersion, 'TValue when 'TVersion: equality>(?keepStr
     let rec post msg =
         Task.Run(fun () -> processStateUpdate post msg) |> ignore
 
-    member _.Get(key: ICacheKey<_>, computation) =
+    member _.Get(key: ICacheKey<_, _>, computation) =
 
-        let key = { Name = key.GetName(); Hash = key.GetHash(); Version = key.GetVersion() }
+        let key = { Label = key.GetLabel(); Key = key.GetKey(); Version = key.GetVersion() }
 
         cancellableTask {
             let! ct = CancellableTask.getCancellationToken()
