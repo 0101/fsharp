@@ -27,6 +27,8 @@ open FSharp.Compiler.TypedTreeOps
 open FSharp.Compiler.TcGlobals
 open FSharp.Compiler.Text
 
+open Internal.Utilities.Collections
+
 /// Delays the creation of an ILModuleReader
 [<Sealed>]
 type DelayedILModuleReader =
@@ -56,6 +58,8 @@ type internal FSharpProjectSnapshotKey =
 
     member LastFile: FSharpFileKey
 
+    interface ICacheKey<string>
+
 [<NoComparison; CustomEquality>]
 type FSharpFileSnapshot =
     { FileName: string
@@ -63,6 +67,9 @@ type FSharpFileSnapshot =
       GetSource: unit -> Task<ISourceText> }
 
     member internal Key: FSharpFileKey
+
+    interface ICacheKey<string>
+
 
 [<NoComparison>]
 type FSharpProjectSnapshot =

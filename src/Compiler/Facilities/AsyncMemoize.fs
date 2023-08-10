@@ -57,7 +57,7 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
     let requiredToKeep = defaultArg requiredToKeep (fun _ -> false)
     let event = defaultArg event (fun _ _ -> ())
 
-    let dictionary = Dictionary<'TKey, Dictionary<'TVersion, 'TValue>>()
+    let dictionary = Dictionary<'TKey, Dictionary<'TVersion, _>>()
 
     // Lists to keep track of when items were last accessed. First item is most recently accessed.
     let strongList = LinkedList<'TKey * 'TVersion * ValueLink<'TValue>>()
@@ -73,6 +73,8 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
                 | false, _ ->
                     weakList.Remove node
                     dictionary[key].Remove version |> ignore
+                    if dictionary[key].Count = 0 then
+                        dictionary.Remove key |> ignore
                     event Collected (key, version)
                 | _ -> ()
                 removeCollected next
@@ -89,6 +91,8 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
                 let key, version, _ = node.Value
                 weakList.Remove node
                 dictionary[key].Remove version |> ignore
+                if dictionary[key].Count = 0 then
+                    dictionary.Remove key |> ignore
                 event Evicted (key, version)
                 node <- previous
 
@@ -97,85 +101,138 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
         while strongList.Count > keepStrongly && node <> null do
             let previous = node.Previous
             match node.Value with
-            | _, Strong v when requiredToKeep v -> ()
-            | k, Strong v ->
+            | _, _, Strong v when requiredToKeep v -> ()
+            | key, version, Strong v ->
                 strongList.Remove node
-                node.Value <- k, Weak (WeakReference<_> v)
+                node.Value <- key, version, Weak (WeakReference<_> v)
                 weakList.AddFirst node
-                event Weakened k
-            | _key, _ -> failwith "Invalid state, weak reference in strong list"
+                event Weakened (key, version)
+            | _key, _version, _ -> failwith "Invalid state, weak reference in strong list"
             node <- previous
         cutWeakListIfTooLong()
 
     let pushNodeToTop (node: LinkedListNode<_>) =
         match node.Value with
-        | _, Strong _ ->
+        | _, _, Strong _ ->
             strongList.AddFirst node
             cutStrongListIfTooLong()
-        | _, Weak _ ->
+        | _, _, Weak _ ->
             failwith "Invalid operation, pusing weak reference to strong list"
 
-    let pushValueToTop key value =
-        let node = strongList.AddFirst(value=(key, Strong value))
+    let pushValueToTop key version value =
+        let node = strongList.AddFirst(value=(key, version, Strong value))
         cutStrongListIfTooLong()
         node
 
-    member _.Set(key, version, value) = 
-        if dictionary.ContainsKey key then
-            let node: LinkedListNode<_> = dictionary[key]
-            match node.Value with
-            | _, Strong _ -> strongList.Remove node
-            | _, Weak _ -> 
-                weakList.Remove node
-                event Strengthened key
-
-            node.Value <- key, Strong value
-            pushNodeToTop node
-
-        else
-            let node = pushValueToTop key value
-            dictionary[key] <- node
-
-    member _.TryGet(key, version) = 
-
+    member _.Set(key, version, value) =
         match dictionary.TryGetValue key with
-        | true, node ->
-            match node.Value with
-            | _, Strong v ->
-                strongList.Remove node
+        | true, versionDict ->
+
+            if versionDict.ContainsKey version then
+                // TODO this is normal for unversioned cache;
+                // failwith "Suspicious - overwriting existing version"
+
+                let node: LinkedListNode<_> = versionDict[version]
+                match node.Value with
+                | _, _, Strong _ -> strongList.Remove node
+                | _, _, Weak _ ->
+                    weakList.Remove node
+                    event Strengthened (key, version)
+
+                node.Value <- key, version, Strong value
                 pushNodeToTop node
-                Some v
 
-            | _, Weak w ->
-                match w.TryGetTarget() with
-                | true, v ->
-                    weakList.Remove node
-                    let node = pushValueToTop key v
-                    event Strengthened key
-                    dictionary[key] <- node
-                    Some v
-                | _ ->
-                    weakList.Remove node
-                    dictionary.Remove key |> ignore
-                    event Collected key
-                    None
-        | _ -> None
+            else
+                let node = pushValueToTop key version value
+                versionDict[version] <- node
+                // weaken all other versions
+                for otherVersion in versionDict.Keys do
+                    if otherVersion <> version then
+                        let node = versionDict[otherVersion]
+                        match node.Value with
+                        | _, _, Strong value ->
+                            strongList.Remove node
+                            node.Value <- key, otherVersion, Weak (WeakReference<_> value)
+                            weakList.AddFirst node
+                            event Weakened (key, otherVersion)
+                        | _, _, Weak _ -> ()
 
-    member _.Remove(key) =
+        | false, _ ->
+            let node = pushValueToTop key version value
+            dictionary[key] <- Dictionary()
+            dictionary[key][version] <- node
+
+    member _.TryGet(key, version) =
+
         match dictionary.TryGetValue key with
-        | true, node ->
-            dictionary.Remove key |> ignore
-            match node.Value with
-            | _, Strong _ -> strongList.Remove node
-            | _, Weak _ -> weakList.Remove node
-        | _ -> ()
+        | false, _ -> None
+        | true, versionDict ->
+            match versionDict.TryGetValue version with
+            | false, _ -> None
+            | true, node ->
+                match node.Value with
+                | _, _, Strong v ->
+                    strongList.Remove node
+                    pushNodeToTop node
+                    Some v
 
-type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?keepWeakly, ?logEvent: (string -> JobEvent * 'TKey -> unit), ?name: string) =
+                | _, _, Weak w ->
+                    match w.TryGetTarget() with
+                    | true, value ->
+                        weakList.Remove node
+                        let node = pushValueToTop key version value
+                        event Strengthened (key, version)
+                        versionDict[version] <- node
+                        Some value
+                    | _ ->
+                        weakList.Remove node
+                        versionDict.Remove version |> ignore
+                        if versionDict.Count = 0 then
+                            dictionary.Remove key |> ignore
+                        event Collected (key, version)
+                        None
+
+    member _.Remove(key, version) =
+        match dictionary.TryGetValue key with
+        | false, _ -> ()
+        | true, versionDict ->
+            match versionDict.TryGetValue version with
+            | true, node ->
+                versionDict.Remove version |> ignore
+                if versionDict.Count = 0 then
+                    dictionary.Remove key |> ignore
+                match node.Value with
+                | _, _, Strong _ -> strongList.Remove node
+                | _, _, Weak _ -> weakList.Remove node
+            | _ -> ()
+
+    //member this.Set(key, value) =
+    //    this.Set(key, Unchecked.defaultof<_>, value)
+
+    //member this.TryGet(key) =
+    //    this.TryGet(key, Unchecked.defaultof<_>)
+
+    //member this.Remove(key) =
+    //    this.Remove(key, Unchecked.defaultof<_>)
+
+
+type internal ICacheKey<'TVersion> =
+    abstract member GetHash: unit -> string
+    abstract member GetVersion: unit -> 'TVersion
+    abstract member GetName: unit -> string
+
+type private KeyData<'TVersion> =
+    { Name: string; Hash: string; Version: 'TVersion }
+
+    // Debug-friendly cache key
+    member this.CacheKey = $"{this.Name}|{this.Hash}"
+
+type internal AsyncMemoize<'TVersion, 'TValue when 'TVersion: equality>(?keepStrongly, ?keepWeakly, ?logEvent: (string -> JobEvent * (string * 'TVersion) -> unit), ?name: string) =
 
     let name = defaultArg name "N/A"
 
     let cache =
-        LruCache<'TKey, Job<'TValue>>(
+        LruCache<string, 'TVersion, Job<'TValue>>(
             keepStrongly = defaultArg keepStrongly 100,
             keepWeakly = defaultArg keepWeakly 200,
             requiredToKeep = (function Running _ -> true | _ -> false),
@@ -198,7 +255,7 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
     //            | _ -> false
     //    )
 
-    let requestCounts = Dictionary<'TKey, int>()
+    let requestCounts = Dictionary<KeyData<_>, int>()
     let cancellationRegistrations = Dictionary<_, _>()
 
     let saveRegistration key registration =
@@ -226,16 +283,16 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
         if requestCounts.ContainsKey key then
             requestCounts[key] <- requestCounts[key] - 1
 
-    let log event =
-        logEvent |> Option.iter (fun x -> x name event)
+    let log (eventType, keyData: KeyData<_>) =
+        logEvent |> Option.iter (fun x -> x name (eventType, (keyData.CacheKey, keyData.Version)))
 
     let gate = obj()
 
-    let processRequest post (key, msg) =
-        
-        lock (gate) (fun () ->
-                
-            let cached = cache.TryGet key
+    let processRequest post (key: KeyData<_>, msg) =
+
+        lock gate (fun () ->
+
+            let cached = cache.TryGet (key.CacheKey, key.Version)
 
             // System.Diagnostics.Trace.TraceInformation $"[{key}] GetOrCompute {cached}"
 
@@ -260,17 +317,17 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
                     post (key, OriginatorCanceled))
                     |> saveRegistration key
 
-                cache.Set(key, (Running(TaskCompletionSource(), (new CancellationTokenSource()), computation)))
+                cache.Set(key.CacheKey, key.Version, (Running(TaskCompletionSource(), (new CancellationTokenSource()), computation)))
 
                 New
         )
 
-    let processStateUpdate post (key, action: StateUpdate<_>) =
+    let processStateUpdate post (key: KeyData<_>, action: StateUpdate<_>) =
 
         lock gate (fun () ->
 
 
-        let cached = cache.TryGet key
+        let cached = cache.TryGet (key.CacheKey, key.Version)
 
         // System.Diagnostics.Trace.TraceInformation $"[{key}] {action} {cached}"
 
@@ -283,7 +340,7 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
                 cancelRegistration key
                 cts.Cancel()
                 tcs.TrySetCanceled() |> ignore
-                cache.Remove key
+                cache.Remove (key.CacheKey, key.Version)
                 requestCounts.Remove key |> ignore
                 log (Canceled, key)
 
@@ -313,7 +370,7 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
                 cancelRegistration key
                 cts.Cancel()
                 tcs.TrySetCanceled() |> ignore
-                cache.Remove key
+                cache.Remove (key.CacheKey, key.Version)
                 requestCounts.Remove key |> ignore
                 log (Canceled, key)
 
@@ -323,14 +380,14 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
         | JobFailed ex, Some (Running (tcs, _cts, _c)) ->
             // TODO: should we restart if there are more requests?
             cancelRegistration key
-            cache.Remove key
+            cache.Remove (key.CacheKey, key.Version)
             requestCounts.Remove key |> ignore
             log (Failed, key)
             tcs.TrySetException ex |> ignore
 
         | JobCompleted result, Some (Running (tcs, _cts, _c)) ->
             cancelRegistration key
-            cache.Set(key, (Completed result))
+            cache.Set(key.CacheKey, key.Version, (Completed result))
             requestCounts.Remove key |> ignore
             log (Finished, key)
             tcs.SetResult result
@@ -364,7 +421,9 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
     let rec post msg =
         Task.Run(fun () -> processStateUpdate post msg) |> ignore
 
-    member _.Get(key, computation) =
+    member _.Get(key: ICacheKey<_>, computation) =
+
+        let key = { Name = key.GetName(); Hash = key.GetHash(); Version = key.GetVersion() }
 
         cancellableTask {
             let! ct = CancellableTask.getCancellationToken()
@@ -387,8 +446,10 @@ type internal AsyncMemoize<'TKey, 'TValue when 'TKey: equality>(?keepStrongly, ?
                     return raise ex
 
             | Existing job -> return! job
-
         }
+
+    //member this.Get(key, computation) =
+    //    this.Get(key, Unchecked.defaultof<_>, computation)
 
     //member _.Get(key, computation) =
     //    ignore key

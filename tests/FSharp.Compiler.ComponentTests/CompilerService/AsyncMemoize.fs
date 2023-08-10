@@ -17,7 +17,7 @@ let ``Stack trace`` () =
 
     let eventLog = ResizeArray()
 
-    let memoize = AsyncMemoize(logEvent=(fun _ -> eventLog.Add))
+    let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ -> eventLog.Add))
 
     let computation key = cancellableTask {
        // do! Async.Sleep 1 |> NodeCode.AwaitAsync
@@ -47,7 +47,7 @@ let ``Basics``() =
 
     let eventLog = ResizeArray()
 
-    let memoize = AsyncMemoize(logEvent=(fun _ -> eventLog.Add))
+    let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ (e, (k, _version)) -> eventLog.Add (e, k)))
 
     let ct = CancellationToken.None
 
@@ -86,7 +86,7 @@ let ``We can cancel a job`` () =
         }
 
         let eventLog = ResizeArray()
-        let memoize = AsyncMemoize(logEvent=(fun _ -> eventLog.Add))
+        let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ (e, (k, _version)) -> eventLog.Add (e, k)))
 
         use cts1 = new CancellationTokenSource()
         use cts2 = new CancellationTokenSource()
@@ -138,7 +138,7 @@ let ``Job is restarted if first requestor cancels`` () =
         }
 
         let eventLog = ConcurrentBag()
-        let memoize = AsyncMemoize(logEvent=(fun _ x -> eventLog.Add (DateTime.Now.Ticks, x)))
+        let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ (e, (k, _version)) -> eventLog.Add (DateTime.Now.Ticks, (e, k))))
 
         use cts1 = new CancellationTokenSource()
         use cts2 = new CancellationTokenSource()
@@ -184,7 +184,7 @@ let ``Job is restarted if first requestor cancels but keeps running if second re
         }
 
         let eventLog = ConcurrentBag()
-        let memoize = AsyncMemoize(logEvent=(fun _ x -> eventLog.Add (DateTime.Now.Ticks, x)))
+        let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ (e, (k, _version)) -> eventLog.Add (DateTime.Now.Ticks, (e, k))))
 
         use cts1 = new CancellationTokenSource()
         use cts2 = new CancellationTokenSource()
@@ -281,7 +281,7 @@ let ``Stress test`` () =
         mixedComputation
     |]
 
-    let cache = AsyncMemoize(keepStrongly=5, keepWeakly=10)
+    let cache = AsyncMemoize<int, int, int list>(keepStrongly=5, keepWeakly=10)
 
     let mutable started = 0
     let mutable canceled = 0

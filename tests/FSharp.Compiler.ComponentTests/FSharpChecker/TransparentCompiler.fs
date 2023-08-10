@@ -225,7 +225,7 @@ let ``File is not checked twice`` () =
     let intermediateTypeChecks =
         cacheEvents
         |> Seq.choose (function
-            | ("TcIntermediate", e, k) -> Some ((k :?> FSharpProjectSnapshotKey).LastFile |> fst |> Path.GetFileName, e)
+            | ("TcIntermediate", e, k) -> Some (( (k :?> (FSharpProjectSnapshotKey * int)) |> fst).LastFile |> fst |> Path.GetFileName, e)
             | _ -> None)
         |> Seq.groupBy fst
         |> Seq.map (fun (k, g) -> k, g |> Seq.map snd |> Seq.toList)

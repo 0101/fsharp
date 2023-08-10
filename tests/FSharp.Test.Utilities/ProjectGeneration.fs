@@ -552,7 +552,7 @@ module ProjectOperations =
             use md5 = System.Security.Cryptography.MD5.Create()
             let inputBytes = Encoding.UTF8.GetBytes(source.ToString())
             let hash = md5.ComputeHash(inputBytes) |> Array.map (fun b -> b.ToString("X2")) |> String.concat ""
-
+            
             return {
                 FileName = filePath
                 Version = hash
