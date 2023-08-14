@@ -490,23 +490,21 @@ type BoundModel private (
 type FrameworkImportsCacheKey = 
     | FrameworkImportsCacheKey of resolvedpath: string list * assemblyName: string * targetFrameworkDirectories: string list * fsharpBinaries: string * langVersion: decimal
 
-    interface ICacheKey<byte array> with
-        member this.GetHash() =
-            this |> function 
-                FrameworkImportsCacheKey(assemblyName=a) ->
-                Md5Hasher.empty
-                |> Md5Hasher.addString a
+    interface ICacheKey<string, FrameworkImportsCacheKey> with
+        member this.GetKey() =
+            this |> function FrameworkImportsCacheKey(assemblyName=a) -> a
 
-        member this.GetName() = 
-            this |> function FrameworkImportsCacheKey(assemblyName=a) -> $"FrameworkImportsCacheKey({a})"
-        member this.GetVersion() = 
-            match this with FrameworkImportsCacheKey(resolvedpath, assemblyName, targetFrameworkDirectories,  fsharpBinaries, langVersion) ->
-                Md5Hasher.empty
-                |> Md5Hasher.addStrings resolvedpath
-                |> Md5Hasher.addString assemblyName
-                |> Md5Hasher.addStrings targetFrameworkDirectories
-                |> Md5Hasher.addString fsharpBinaries
-                |> Md5Hasher.addString (langVersion.ToString())
+        member this.GetLabel() = 
+            this |> function FrameworkImportsCacheKey(assemblyName=a) -> a
+
+        member this.GetVersion() = this
+            //match this with FrameworkImportsCacheKey(resolvedpath, assemblyName, targetFrameworkDirectories,  fsharpBinaries, langVersion) ->
+            //    Md5Hasher.empty
+            //    |> Md5Hasher.addStrings resolvedpath
+            //    |> Md5Hasher.addString assemblyName
+            //    |> Md5Hasher.addStrings targetFrameworkDirectories
+            //    |> Md5Hasher.addString fsharpBinaries
+            //    |> Md5Hasher.addString (langVersion.ToString())
         
 
 /// Represents a cache of 'framework' references that can be shared between multiple incremental builds

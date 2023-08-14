@@ -153,14 +153,10 @@ type FSharpFileSnapshot =
 
     override this.GetHashCode() = this.Key.GetHashCode()
 
-    override this.ToString() = 
-        let dir = Path.GetDirectoryName(this.FileName).Split(Path.DirectorySeparatorChar) |> Array.last
-        $"{dir}/{Path.GetFileName(this.FileName)}"
-
     member this.Key = this :> ICacheKey<_, _>
 
     interface ICacheKey<string, string> with
-        member this.GetLabel() = this.ToString()
+        member this.GetLabel() = this.FileName |> shortPath
         member this.GetKey() = this.FileName 
         member this.GetVersion() = this.Version
 

@@ -32,7 +32,7 @@ type internal FrameworkImportsCacheKey =
         fsharpBinaries: string *
         langVersion: decimal
     
-    interface ICacheKey<byte array>
+    interface ICacheKey<string, FrameworkImportsCacheKey>
 
 /// Lookup the global static cache for building the FrameworkTcImports
 type internal FrameworkImportsCache =

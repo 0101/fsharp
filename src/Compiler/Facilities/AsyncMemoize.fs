@@ -10,7 +10,18 @@ open System.Collections.Concurrent
 
 open Microsoft.VisualStudio.FSharp.Editor.CancellableTasks
 open Internal.Utilities.TaskAgent
+open System.IO
 
+
+[<AutoOpen>]
+module Utils =
+    
+    /// Return file name with one directory above it
+    let shortPath path = 
+        let dirPath = Path.GetDirectoryName path 
+        let dir = dirPath.Split Path.PathSeparator |> Array.tryLast |> Option.map (sprintf "%s/") |> Option.defaultValue ""
+        $"{dir}{Path.GetFileName path}"
+    
 
 type internal StateUpdate<'TValue> =
     | CancelRequest
@@ -274,12 +285,12 @@ module internal Md5Hasher =
         Array.append bytes bytes2 |> md5.ComputeHash
     
 
-type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TVersion: equality>(?keepStrongly, ?keepWeakly, ?logEvent: (string -> JobEvent * (string * 'TVersion) -> unit), ?name: string) =
+type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVersion: equality>(?keepStrongly, ?keepWeakly, ?logEvent: (string -> JobEvent * (string * 'TKey * 'TVersion) -> unit), ?name: string) =
 
     let name = defaultArg name "N/A"
 
     let cache =
-        LruCache<string, 'TVersion, Job<'TValue>>(
+        LruCache<'TKey, 'TVersion, Job<'TValue>>(
             keepStrongly = defaultArg keepStrongly 100,
             keepWeakly = defaultArg keepWeakly 200,
             requiredToKeep = (function Running _ -> true | _ -> false),
@@ -288,19 +299,6 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TVersion: equality>(?
                 | Collected -> (fun k -> logEvent |> Option.iter (fun x -> x name (JobEvent.Collected, k)))
                 | Weakened -> (fun k -> logEvent |> Option.iter (fun x -> x name (JobEvent.Weakened, k)))
                 | Strengthened -> (fun k -> logEvent |> Option.iter (fun x -> x name (JobEvent.Strengthened, k)))))
-
-    //let tok = obj ()
-
-    //let cache =
-    //    MruCache<_, 'TKey, Job<'TValue>>(
-    //        keepStrongly = 3,
-    //        keepMax = 5,
-    //        areSame = (fun (x, y) -> x = y),
-    //        requiredToKeep =
-    //            function
-    //            | Running _ -> true
-    //            | _ -> false
-    //    )
 
     let requestCounts = Dictionary<KeyData<_, _>, int>()
     let cancellationRegistrations = Dictionary<_, _>()
@@ -331,7 +329,7 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TVersion: equality>(?
             requestCounts[key] <- requestCounts[key] - 1
 
     let log (eventType, keyData: KeyData<_, _>) =
-        logEvent |> Option.iter (fun x -> x name (eventType, (keyData.Key, keyData.Version)))
+        logEvent |> Option.iter (fun x -> x name (eventType, (keyData.Label, keyData.Key, keyData.Version)))
 
     let gate = obj()
 
@@ -468,6 +466,15 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TVersion: equality>(?
     let rec post msg =
         Task.Run(fun () -> processStateUpdate post msg) |> ignore
 
+    member this.Get'(key, computation) =
+
+        let wrappedKey = 
+            { new ICacheKey<_, _> with
+                member _.GetKey() = key
+                member _.GetVersion() = Unchecked.defaultof<_>
+                member _.GetLabel() = key.ToString() }
+        this.Get(wrappedKey, computation)
+
     member _.Get(key: ICacheKey<_, _>, computation) =
 
         let key = { Label = key.GetLabel(); Key = key.GetKey(); Version = key.GetVersion() }
@@ -494,6 +501,7 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TVersion: equality>(?
 
             | Existing job -> return! job
         }
+
 
     //member this.Get(key, computation) =
     //    this.Get(key, Unchecked.defaultof<_>, computation)

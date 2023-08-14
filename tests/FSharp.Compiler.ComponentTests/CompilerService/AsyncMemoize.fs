@@ -22,7 +22,7 @@ let ``Stack trace`` () =
     let computation key = cancellableTask {
        // do! Async.Sleep 1 |> NodeCode.AwaitAsync
 
-        let! result = memoize.Get(key * 2, cancellableTask {
+        let! result = memoize.Get'(key * 2, cancellableTask {
             //do! Async.Sleep 1 |> NodeCode.AwaitAsync
             return key * 5
         })
@@ -32,7 +32,7 @@ let ``Stack trace`` () =
 
     //let _r2 = computation 10
 
-    let result = memoize.Get(1, computation 1) CancellationToken.None
+    let result = memoize.Get'(1, computation 1) CancellationToken.None
 
     Assert.Equal(10, result.Result)
 
@@ -47,18 +47,18 @@ let ``Basics``() =
 
     let eventLog = ResizeArray()
 
-    let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ (e, (k, _version)) -> eventLog.Add (e, k)))
+    let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ (e, (_label, k, _version)) -> eventLog.Add (e, k)))
 
     let ct = CancellationToken.None
 
     let task =
         seq {
-            memoize.Get(5, computation 5) ct
-            memoize.Get(5, computation 5) ct
-            memoize.Get(2, computation 2) ct
-            memoize.Get(5, computation 5) ct
-            memoize.Get(3, computation 3) ct
-            memoize.Get(2, computation 2) ct
+            memoize.Get'(5, computation 5) ct
+            memoize.Get'(5, computation 5) ct
+            memoize.Get'(2, computation 2) ct
+            memoize.Get'(5, computation 5) ct
+            memoize.Get'(3, computation 3) ct
+            memoize.Get'(2, computation 2) ct
         }
         |> Task.WhenAll
 
@@ -86,7 +86,7 @@ let ``We can cancel a job`` () =
         }
 
         let eventLog = ResizeArray()
-        let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ (e, (k, _version)) -> eventLog.Add (e, k)))
+        let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ (e, (_, k, _version)) -> eventLog.Add (e, k)))
 
         use cts1 = new CancellationTokenSource()
         use cts2 = new CancellationTokenSource()
@@ -95,9 +95,9 @@ let ``We can cancel a job`` () =
         let key = 1
 
 
-        let _task1 = memoize.Get(key, computation key) cts1.Token
-        let _task2 = memoize.Get(key, computation key) cts2.Token
-        let _task3 = memoize.Get(key, computation key) cts3.Token
+        let _task1 = memoize.Get'(key, computation key) cts1.Token
+        let _task2 = memoize.Get'(key, computation key) cts2.Token
+        let _task3 = memoize.Get'(key, computation key) cts3.Token
 
         jobStarted.WaitOne() |> ignore
         do! memoize.Sync()
@@ -138,7 +138,7 @@ let ``Job is restarted if first requestor cancels`` () =
         }
 
         let eventLog = ConcurrentBag()
-        let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ (e, (k, _version)) -> eventLog.Add (DateTime.Now.Ticks, (e, k))))
+        let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ (e, (_, k, _version)) -> eventLog.Add (DateTime.Now.Ticks, (e, k))))
 
         use cts1 = new CancellationTokenSource()
         use cts2 = new CancellationTokenSource()
@@ -146,9 +146,9 @@ let ``Job is restarted if first requestor cancels`` () =
 
         let key = 1
 
-        let _task1 = memoize.Get(key, computation key) cts1.Token
-        let _task2 = memoize.Get(key, computation key) cts2.Token
-        let _task3 = memoize.Get(key, computation key) cts3.Token
+        let _task1 = memoize.Get'(key, computation key) cts1.Token
+        let _task2 = memoize.Get'(key, computation key) cts2.Token
+        let _task3 = memoize.Get'(key, computation key) cts3.Token
 
 
         jobStarted.WaitOne() |> ignore
@@ -184,7 +184,7 @@ let ``Job is restarted if first requestor cancels but keeps running if second re
         }
 
         let eventLog = ConcurrentBag()
-        let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ (e, (k, _version)) -> eventLog.Add (DateTime.Now.Ticks, (e, k))))
+        let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ (e, (_, k, _version)) -> eventLog.Add (DateTime.Now.Ticks, (e, k))))
 
         use cts1 = new CancellationTokenSource()
         use cts2 = new CancellationTokenSource()
@@ -192,11 +192,11 @@ let ``Job is restarted if first requestor cancels but keeps running if second re
 
         let key = 1
 
-        let _task1 = memoize.Get(key, computation key) cts1.Token
+        let _task1 = memoize.Get'(key, computation key) cts1.Token
 
         jobStarted.WaitOne() |> ignore
-        let _task2 = memoize.Get(key, computation key) cts2.Token
-        let _task3 = memoize.Get(key, computation key) cts3.Token
+        let _task2 = memoize.Get'(key, computation key) cts2.Token
+        let _task3 = memoize.Get'(key, computation key) cts3.Token
 
         cts1.Cancel()
 
@@ -302,7 +302,7 @@ let ``Stress test`` () =
                         let timeoutMs = rng.Next(minTimeout, maxTimeout)
                         let key = keys[rng.Next keys.Length]
                         let result = key * 2
-                        let job = cache.Get(key, computation durationMs result)
+                        let job = cache.Get'(key, computation durationMs result)
                         let cts = new CancellationTokenSource()
                         let runningJob = job cts.Token
                         cts.CancelAfter timeoutMs

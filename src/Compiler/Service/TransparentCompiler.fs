@@ -43,6 +43,7 @@ open FSharp.Compiler.CreateILModule
 open FSharp.Compiler.TypedTreeOps
 open Microsoft.VisualStudio.FSharp.Editor.CancellableTasks
 
+
 type internal FSharpFile =
     {
         Range: range
@@ -132,8 +133,19 @@ type internal DependencyGraphType =
 [<Extension>]
 type internal Extensions =
     [<Extension>]
-    static member Key(fileSnapshots: FSharpFileSnapshot list) =
-        fileSnapshots |> List.map (fun f -> f.Key)
+    static member Key(fileSnapshots: FSharpFileSnapshot list, ?extraKeyFlag) =
+        
+        { new ICacheKey<_, byte array> with
+            member _.GetLabel() =
+                let lastFile = fileSnapshots |> List.tryLast |> Option.map (fun f -> f.FileName |> shortPath) |> Option.defaultValue "[no file]"
+                $"%d{fileSnapshots.Length} files ending with {lastFile}"
+            member _.GetKey() =
+                Md5Hasher.empty
+                |> Md5Hasher.addStrings (fileSnapshots |> Seq.map (fun f -> f.FileName))
+                |> pair extraKeyFlag
+            member _.GetVersion() =
+                Md5Hasher.empty
+                |> Md5Hasher.addStrings (fileSnapshots |> Seq.map (fun f -> f.Version)) }
 
 module private TypeCheckingGraphProcessing =
     open FSharp.Compiler.GraphChecking.GraphProcessing
@@ -832,14 +844,10 @@ type internal TransparentCompiler
     let ComputeParseFile bootstrapInfo (file: FSharpFile) =
         
         let key =
-            { new ICacheKey<_> with
-                member _.GetName() = file.Source.FileName 
-                member _.GetKey() = 
-                    Md5Hasher.empty
-                    |> Md5Hasher.addKey file.Source
-                    |> Md5Hasher.addBool file.IsLastCompiland
-                    |> Md5Hasher.addBool file.IsExe
-                member _.GetVersion() = file.Source.Version }
+            { new ICacheKey<_, _> with
+                member _.GetLabel() = shortPath file.Source.FileName 
+                member _.GetKey() = file.Source.FileName
+                member _.GetVersion() = file.Source.Version, file.IsLastCompiland, file.IsExe }
 
         ParseFileCache.Get(
             key,
@@ -948,13 +956,13 @@ type internal TransparentCompiler
         |> Graph.make
 
     let ComputeDependencyGraphForFile (priorSnapshot: FSharpProjectSnapshot) parsedInputs (tcConfig: TcConfig) =
-        let key = priorSnapshot.SourceFiles.Key(), DependencyGraphType.File
+        let key = priorSnapshot.SourceFiles.Key(DependencyGraphType.File) 
         //let lastFileIndex = (parsedInputs |> Array.length) - 1
         //DependencyGraphCache.Get(key, computeDependencyGraph parsedInputs tcConfig (Graph.subGraphFor lastFileIndex))
         DependencyGraphCache.Get(key, computeDependencyGraph parsedInputs tcConfig (removeImplFilesThatHaveSignaturesExceptLastOne priorSnapshot))
 
     let ComputeDependencyGraphForProject (projectSnapshot: FSharpProjectSnapshot) parsedInputs (tcConfig: TcConfig) =
-        let key = projectSnapshot.SourceFiles.Key(), DependencyGraphType.Project
+        let key = projectSnapshot.SourceFiles.Key(DependencyGraphType.Project)
         //DependencyGraphCache.Get(key, computeDependencyGraph parsedInputs tcConfig (removeImplFilesThatHaveSignatures projectSnapshot))
         DependencyGraphCache.Get(key, computeDependencyGraph parsedInputs tcConfig id)
 
@@ -1224,7 +1232,12 @@ type internal TransparentCompiler
         FSharpParseFileResults(diagnostics, parseTree, true, [||])
 
     let ComputeParseAndCheckFileInProject (fileName: string) (projectSnapshot: FSharpProjectSnapshot) =
-        let key = fileName, projectSnapshot.Key
+        let key = {
+            new ICacheKey<_, _> with 
+                member _.GetLabel() = $"{fileName |> shortPath} in {projectSnapshot.Key.GetLabel()}"
+                member _.GetKey() = fileName, projectSnapshot.Key.GetKey()
+                member _.GetVersion() = projectSnapshot.Key.GetVersion()
+        }
 
         ParseAndCheckFileInProjectCache.Get(
             key,

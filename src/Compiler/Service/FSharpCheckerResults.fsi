@@ -171,7 +171,7 @@ and [<NoComparison; CustomEquality>] public FSharpReferencedProjectSnapshot =
     static member CreateFSharp:
         projectOutputFile: string * options: FSharpProjectSnapshot -> FSharpReferencedProjectSnapshot
 
-    member internal Key: ICacheKey<string>
+    member internal Key: ICacheKey<string, byte array>
 
 /// <summary>A set of information describing a project or script build configuration.</summary>
 type public FSharpProjectOptions =
