@@ -45,6 +45,7 @@ type FilePath = string
 type ProjectPath = string
 type FileVersion = int
 
+
 type internal IBackgroundCompiler =
 
     /// Type-check the result obtained by parsing. Force the evaluation of the antecedent type checking context if needed.
@@ -167,8 +168,6 @@ type internal IBackgroundCompiler =
 
     abstract member ProjectChecked: IEvent<FSharpProjectOptions>
 
-    abstract member CacheEvent: IEvent<string * JobEvent * obj>
-
 type ParseCacheLockToken() =
     interface LockToken
 
@@ -252,8 +251,6 @@ type internal BackgroundCompiler
     let fileParsed = Event<string * FSharpProjectOptions>()
     let fileChecked = Event<string * FSharpProjectOptions>()
     let projectChecked = Event<FSharpProjectOptions>()
-
-    let cacheEvent = Event<string * JobEvent * obj>()
 
     // STATIC ROOT: FSharpLanguageServiceTestable.FSharpChecker.backgroundCompiler.scriptClosureCache
     /// Information about the derived script closure.
@@ -1451,9 +1448,8 @@ type internal BackgroundCompiler
 
     static member ActualCheckFileCount = actualCheckFileCount
 
+    
     interface IBackgroundCompiler with
-
-        member _.CacheEvent = cacheEvent.Publish
 
         member _.BeforeBackgroundFileCheck = self.BeforeBackgroundFileCheck
 

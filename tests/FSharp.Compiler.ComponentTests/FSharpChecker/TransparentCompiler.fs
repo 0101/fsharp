@@ -76,10 +76,10 @@ let ``Parallel processing with signatures`` () =
         sourceFile "D" ["A"] |> addSignatureFile,
         sourceFile "E" ["B"; "C"; "D"] |> addSignatureFile)
 
-    let cacheEvents = ConcurrentBag<_>()
+    //let cacheEvents = ConcurrentBag<_>()
 
     ProjectWorkflowBuilder(project, useTransparentCompiler = true) {
-        withChecker (fun checker -> checker.CacheEvent.Add cacheEvents.Add)
+        //withChecker (fun checker -> checker.CacheEvent.Add cacheEvents.Add)
         checkFile "E" expectOk
         updateFile "A" updatePublicSurface
         checkFile "E" expectNoChanges
@@ -216,7 +216,7 @@ let ``File is not checked twice`` () =
         withChecker (fun checker ->
             async {
                 do! Async.Sleep 50 // wait for events from initial project check
-                checker.CacheEvent.Add cacheEvents.Add
+                checker.Caches.TcIntermediate.OnEvent cacheEvents.Add
             })
         updateFile "First" updatePublicSurface
         checkFile "Third" expectOk
@@ -224,15 +224,12 @@ let ``File is not checked twice`` () =
 
     let intermediateTypeChecks =
         cacheEvents
-        |> Seq.choose (function
-            | ("TcIntermediate", e, k) -> Some (( (k :?> (FSharpProjectSnapshotKey * int)) |> fst).LastFile |> fst |> Path.GetFileName, e)
-            | _ -> None)
-        |> Seq.groupBy fst
-        |> Seq.map (fun (k, g) -> k, g |> Seq.map snd |> Seq.toList)
+        |> Seq.groupBy (fun (_e, (_l, (f, _p), _)) -> f |> Path.GetFileName)
+        |> Seq.map (fun (k, g) -> k, g |> Seq.map fst |> Seq.toList)
         |> Map
 
-    Assert.Equal<JobEvent list>([Started; Finished], intermediateTypeChecks["FileFirst.fs"])
-    Assert.Equal<JobEvent list>([Started; Finished], intermediateTypeChecks["FileThird.fs"])
+    Assert.Equal<JobEvent list>([Weakened; Started; Finished], intermediateTypeChecks["FileFirst.fs"])
+    Assert.Equal<JobEvent list>([Weakened; Started; Finished], intermediateTypeChecks["FileThird.fs"])
 
 [<Fact>]
 let ``We don't check files that are not depended on`` () =
@@ -248,7 +245,7 @@ let ``We don't check files that are not depended on`` () =
         withChecker (fun checker ->
             async {
                 do! Async.Sleep 50 // wait for events from initial project check
-                checker.CacheEvent.Add cacheEvents.Add
+                checker.Caches.TcIntermediate.OnEvent cacheEvents.Add
             })
         updateFile "First" updatePublicSurface
         checkFile "Last" expectOk
@@ -256,11 +253,8 @@ let ``We don't check files that are not depended on`` () =
 
     let intermediateTypeChecks =
         cacheEvents
-        |> Seq.choose (function
-            | ("TcIntermediate", e, k) -> Some ((k :?> FSharpProjectSnapshotKey).LastFile |> fst |> Path.GetFileName, e)
-            | _ -> None)
-        |> Seq.groupBy fst
-        |> Seq.map (fun (k, g) -> k, g |> Seq.map snd |> Seq.toList)
+        |> Seq.groupBy (fun (_e, (_l, (f, _p), _)) -> Path.GetFileName f)
+        |> Seq.map (fun (k, g) -> k, g |> Seq.map fst |> Seq.toList)
         |> Map
 
     Assert.Equal<JobEvent list>([Started; Finished], intermediateTypeChecks["FileFirst.fs"])
@@ -275,7 +269,8 @@ let ``Files that are not depended on don't invalidate cache`` () =
         sourceFile "Third" ["First"],
         sourceFile "Last" ["Third"])
 
-    let cacheEvents = ResizeArray()
+    let cacheTcIntermediateEvents = ResizeArray()
+    let cacheGraphConstructionEvents = ResizeArray()
 
     ProjectWorkflowBuilder(project, useTransparentCompiler = true) {
         updateFile "First" updatePublicSurface
@@ -283,28 +278,24 @@ let ``Files that are not depended on don't invalidate cache`` () =
         withChecker (fun checker ->
             async {
                 do! Async.Sleep 50 // wait for events from initial project check
-                checker.CacheEvent.Add cacheEvents.Add
+                checker.Caches.TcIntermediate.OnEvent cacheTcIntermediateEvents.Add
+                checker.Caches.DependencyGraph.OnEvent cacheGraphConstructionEvents.Add
+
             })
         updateFile "Second" updatePublicSurface
         checkFile "Last" expectOk
     } |> ignore
 
     let intermediateTypeChecks =
-        cacheEvents
-        |> Seq.choose (function
-            | ("TcIntermediate", e, k) -> Some ((k :?> FSharpProjectSnapshotKey).LastFile |> fst |> Path.GetFileName, e)
-            | _ -> None)
-        |> Seq.groupBy fst
-        |> Seq.map (fun (k, g) -> k, g |> Seq.map snd |> Seq.toList)
+        cacheTcIntermediateEvents
+        |> Seq.groupBy (fun (_e, (l, _k, _)) -> l)
+        |> Seq.map (fun (k, g) -> k, g |> Seq.map fst |> Seq.toList)
         |> Map
 
     let graphConstructions =
-        cacheEvents
-        |> Seq.choose (function
-            | ("DependencyGraph", e, k) -> Some ((k :?> (FSharpFileKey list * DependencyGraphType)) |> fst |> List.last |> fst |> Path.GetFileName, e)
-            | _ -> None)
-        |> Seq.groupBy fst
-        |> Seq.map (fun (k, g) -> k, g |> Seq.map snd |> Seq.toList)
+        cacheGraphConstructionEvents
+        |> Seq.groupBy (fun (_e, (l, _k, _)) -> l)
+        |> Seq.map (fun (k, g) -> k, g |> Seq.map fst |> Seq.toList)
         |> Map
 
     Assert.Equal<JobEvent list>([Started; Finished], graphConstructions["FileLast.fs"])
@@ -320,7 +311,8 @@ let ``Files that are not depended on don't invalidate cache part 2`` () =
         sourceFile "D" ["B"; "C"],
         sourceFile "E" ["C"])
 
-    let cacheEvents = ResizeArray()
+    let cacheTcIntermediateEvents = ResizeArray()
+    let cacheGraphConstructionEvents = ResizeArray()
 
     ProjectWorkflowBuilder(project, useTransparentCompiler = true) {
         updateFile "A" updatePublicSurface
@@ -328,35 +320,30 @@ let ``Files that are not depended on don't invalidate cache part 2`` () =
         withChecker (fun checker ->
             async {
                 do! Async.Sleep 50 // wait for events from initial project check
-                checker.CacheEvent.Add cacheEvents.Add
+                checker.Caches.TcIntermediate.OnEvent cacheTcIntermediateEvents.Add
+                checker.Caches.DependencyGraph.OnEvent cacheGraphConstructionEvents.Add
             })
         updateFile "B" updatePublicSurface
         checkFile "E" expectOk
     } |> ignore
 
     let intermediateTypeChecks =
-        cacheEvents
-        |> Seq.choose (function
-            | ("TcIntermediate", e, k) -> Some ((k :?> FSharpProjectSnapshotKey).LastFile |> fst |> Path.GetFileName, e)
-            | _ -> None)
-        |> Seq.groupBy fst
-        |> Seq.map (fun (k, g) -> k, g |> Seq.map snd |> Seq.toList)
+        cacheTcIntermediateEvents
+        |> Seq.groupBy (fun (_e, (l, _k, _)) -> l)
+        |> Seq.map (fun (k, g) -> k, g |> Seq.map fst |> Seq.toList)
         |> Seq.toList
 
     let graphConstructions =
-        cacheEvents
-        |> Seq.choose (function
-            | ("DependencyGraph", e, k) -> Some ((k :?> (FSharpFileKey list * DependencyGraphType)) |> fst |> List.last |> fst |> Path.GetFileName, e)
-            | _ -> None)
-        |> Seq.groupBy fst
-        |> Seq.map (fun (k, g) -> k, g |> Seq.map snd |> Seq.toList)
+        cacheGraphConstructionEvents
+        |> Seq.groupBy (fun (_e, (l, _k, _)) -> l)
+        |> Seq.map (fun (k, g) -> k, g |> Seq.map fst |> Seq.toList)
         |> Seq.toList
 
     Assert.Equal<string * JobEvent list>(["FileE.fs", [Started; Finished]], graphConstructions)
     Assert.Equal<string * JobEvent list>(["FileE.fs", [Started; Finished]], intermediateTypeChecks)
 
 [<Fact>]
-let ``Chaging impl files doesn't invalidate cache when they have signatures`` () =
+let ``Changing impl files doesn't invalidate cache when they have signatures`` () =
     let project = SyntheticProject.Create(
         { sourceFile "A" [] with SignatureFile = AutoGenerated },
         { sourceFile "B" ["A"] with SignatureFile = AutoGenerated },
@@ -370,7 +357,7 @@ let ``Chaging impl files doesn't invalidate cache when they have signatures`` ()
         withChecker (fun checker ->
             async {
                 do! Async.Sleep 50 // wait for events from initial project check
-                checker.CacheEvent.Add cacheEvents.Add
+                checker.Caches.TcIntermediate.OnEvent cacheEvents.Add
             })
         updateFile "A" updateInternal
         checkFile "C" expectOk
@@ -378,15 +365,11 @@ let ``Chaging impl files doesn't invalidate cache when they have signatures`` ()
 
     let intermediateTypeChecks =
         cacheEvents
-        |> Seq.choose (function
-            | ("TcIntermediate", e, k) -> Some ((k :?> FSharpProjectSnapshotKey).LastFile |> fst |> Path.GetFileName, e)
-            | _ -> None)
-        |> Seq.groupBy fst
-        |> Seq.map (fun (k, g) -> k, g |> Seq.map snd |> Seq.toList)
+        |> Seq.groupBy (fun (_e, (l, _k, _)) -> l)
+        |> Seq.map (fun (k, g) -> k, g |> Seq.map fst |> Seq.toList)
         |> Seq.toList
 
     Assert.Equal<string * JobEvent list>([], intermediateTypeChecks)
-
 
 
 [<Theory>]
@@ -521,12 +504,12 @@ let fuzzingTest seed (project: SyntheticProject) = task {
     }
 
 
-    let addCacheEvent (name, jobEvent, key)=
+    let _addCacheEvent (name, jobEvent, key)=
         //System.Diagnostics.Trace.TraceInformation $"{DateTime.Now.Ticks}| {name} {jobEvent} {key}"
         if name = "TcIntermediate" then
             log.Value.Add (DateTime.Now.Ticks, $"{jobEvent} {key}")
 
-    checker.CacheEvent.Add addCacheEvent
+    //checker.CacheEvent.Add addCacheEvent
 
     let checkingLoop n = cancellableTask {
         for _ in 1 .. checkingLoopIterations do

@@ -272,6 +272,14 @@ type FSharpChecker
 
     member _.UsesTransparentCompiler = useTransparentCompiler = Some true
 
+    member _.TransparentCompiler = 
+        match useTransparentCompiler with
+        | Some true -> backgroundCompiler :?> TransparentCompiler 
+        | _ -> failwith "Transparent Compiler is not enabled."
+
+    member this.Caches =
+        this.TransparentCompiler.Caches
+
     member _.ReferenceResolver = legacyReferenceResolver
 
     member _.MatchBraces(fileName, sourceText: ISourceText, options: FSharpParsingOptions, ?userOpName: string) =
@@ -621,8 +629,6 @@ type FSharpChecker
     member _.FileChecked = backgroundCompiler.FileChecked
 
     member _.ProjectChecked = backgroundCompiler.ProjectChecked
-
-    member _.CacheEvent = backgroundCompiler.CacheEvent
 
     static member ActualParseFileCount = BackgroundCompiler.ActualParseFileCount
 

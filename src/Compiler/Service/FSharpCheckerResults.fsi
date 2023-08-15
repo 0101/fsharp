@@ -144,9 +144,11 @@ type FSharpProjectSnapshot =
     /// A snapshot of the same project with file versions removed.
     member WithoutFileVersions: FSharpProjectSnapshot
 
-    member internal Key: ICacheKey<string, byte array>
+    member internal Key: ICacheKey<string, string>
 
-    interface ICacheKey<string, byte array>
+    member internal FileKey: fileName:string -> ICacheKey<(string * string), string>
+
+    interface ICacheKey<string, string>
 
 and [<NoComparison; CustomEquality>] public FSharpReferencedProjectSnapshot =
     internal
@@ -171,7 +173,7 @@ and [<NoComparison; CustomEquality>] public FSharpReferencedProjectSnapshot =
     static member CreateFSharp:
         projectOutputFile: string * options: FSharpProjectSnapshot -> FSharpReferencedProjectSnapshot
 
-    member internal Key: ICacheKey<string, byte array>
+    member internal Key: ICacheKey<string, string>
 
 /// <summary>A set of information describing a project or script build configuration.</summary>
 type public FSharpProjectOptions =

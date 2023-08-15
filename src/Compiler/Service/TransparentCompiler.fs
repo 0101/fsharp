@@ -135,7 +135,7 @@ type internal Extensions =
     [<Extension>]
     static member Key(fileSnapshots: FSharpFileSnapshot list, ?extraKeyFlag) =
         
-        { new ICacheKey<_, byte array> with
+        { new ICacheKey<_, _> with
             member _.GetLabel() =
                 let lastFile = fileSnapshots |> List.tryLast |> Option.map (fun f -> f.FileName |> shortPath) |> Option.defaultValue "[no file]"
                 $"%d{fileSnapshots.Length} files ending with {lastFile}"
@@ -256,6 +256,38 @@ open Microsoft.VisualStudio.FSharp.Editor.CancellableTasks.CancellableTaskBuilde
 open System.Threading
 open Microsoft.VisualStudio.FSharp.Editor.CancellableTasks
 
+
+type internal CompilerCaches() =
+
+    member val ParseFile = AsyncMemoize(keepStrongly=1000, keepWeakly=2000, name="ParseFile")
+
+    member val ParseAndCheckFileInProject = AsyncMemoize(name="ParseAndCheckFileInProject")
+
+    member val ParseAndCheckAllFilesInProject = AsyncMemoize(name="ParseAndCheckFullProject")
+
+    member val ParseAndCheckProject = AsyncMemoize(name="ParseAndCheckProject")
+
+    member val FrameworkImports = AsyncMemoize(name="FrameworkImports")
+
+    member val BootstrapInfoStatic = AsyncMemoize(name="BootstrapInfoStatic")
+
+    member val BootstrapInfo = AsyncMemoize(name="BootstrapInfo")
+
+    member val TcFile = AsyncMemoize(name="TcPrior")
+
+    member val TcIntermediate = AsyncMemoize(keepStrongly=1000, keepWeakly=2000, name="TcIntermediate")
+
+    member val DependencyGraph = AsyncMemoize(name="DependencyGraph")
+
+    member val ProjectExtras = AsyncMemoize(name="ProjectExtras")
+
+    member val AssemblyData = AsyncMemoize(name="AssemblyData")
+
+    member val SemanticClassification = AsyncMemoize(name="SemanticClassification")
+
+    member val ItemKeyStore = AsyncMemoize(name="ItemKeyStore") 
+
+
 type internal TransparentCompiler
     (
         legacyReferenceResolver,
@@ -277,41 +309,7 @@ type internal TransparentCompiler
     // Is having just one of these ok?
     let lexResourceManager = Lexhelp.LexResourceManager()
 
-    let cacheEvent = new Event<string * JobEvent * obj>()
-    let triggerCacheEvent name (e, k) = cacheEvent.Trigger(name, e, k)
-
-    let ParseFileCache = AsyncMemoize(keepStrongly=1000, keepWeakly=2000, logEvent=triggerCacheEvent, name="ParseFile")
-
-    let ParseAndCheckFileInProjectCache =
-        AsyncMemoize(logEvent=triggerCacheEvent, name="ParseAndCheckFileInProject")
-
-    let ParseAndCheckAllFilesInProjectCache =
-        AsyncMemoize(logEvent=triggerCacheEvent, name="ParseAndCheckFullProject")
-
-    let ParseAndCheckProjectCache =
-        AsyncMemoize(logEvent=triggerCacheEvent, name="ParseAndCheckProject")
-
-    let FrameworkImportsCache = AsyncMemoize(logEvent=triggerCacheEvent, name="FrameworkImports")
-
-    let BootstrapInfoStaticCache =
-        AsyncMemoize(logEvent=triggerCacheEvent, name="BootstrapInfoStatic")
-
-    let BootstrapInfoCache = AsyncMemoize(logEvent=triggerCacheEvent, name="BootstrapInfo")
-
-    let TcFileCache = AsyncMemoize(logEvent=triggerCacheEvent, name="TcPrior")
-
-    let TcIntermediateCache = AsyncMemoize(keepStrongly=1000, keepWeakly=2000, logEvent=triggerCacheEvent, name="TcIntermediate")
-
-    let DependencyGraphCache = AsyncMemoize(logEvent=triggerCacheEvent, name="DependencyGraph")
-
-    let ProjectExtrasCache = AsyncMemoize(logEvent=triggerCacheEvent, name="ProjectExtras")
-
-    let AssemblyDataCache = AsyncMemoize(logEvent=triggerCacheEvent, name="AssemblyData")
-
-    let SemanticClassificationCache =
-        AsyncMemoize(logEvent=triggerCacheEvent, name="SemanticClassification")
-
-    let ItemKeyStoreCache = AsyncMemoize(logEvent=triggerCacheEvent, name="ItemKeyStore")
+    let caches = CompilerCaches()
 
     // We currently share one global dependency provider for all scripts for the FSharpChecker.
     // For projects, one is used per project.
@@ -359,7 +357,7 @@ type internal TransparentCompiler
                 tcConfig.langVersion.SpecifiedVersion
             )
 
-        FrameworkImportsCache.Get(
+        caches.FrameworkImports.Get(
             key,
             cancellableTask {
                 use _ = Activity.start "ComputeFrameworkImports" []
@@ -515,7 +513,7 @@ type internal TransparentCompiler
 
         let key = projectSnapshot.WithoutFileVersions.Key
 
-        BootstrapInfoStaticCache.Get(
+        caches.BootstrapInfoStatic.Get(
             key,
             cancellableTask {
                 use _ =
@@ -799,7 +797,7 @@ type internal TransparentCompiler
         }
 
     let ComputeBootstrapInfo (projectSnapshot: FSharpProjectSnapshot) =
-        BootstrapInfoCache.Get(
+        caches.BootstrapInfo.Get(
             projectSnapshot.Key,
             cancellableTask {
                 use _ =
@@ -849,7 +847,7 @@ type internal TransparentCompiler
                 member _.GetKey() = file.Source.FileName
                 member _.GetVersion() = file.Source.Version, file.IsLastCompiland, file.IsExe }
 
-        ParseFileCache.Get(
+        caches.ParseFile.Get(
             key,
             cancellableTask {
                 use _ =
@@ -958,13 +956,13 @@ type internal TransparentCompiler
     let ComputeDependencyGraphForFile (priorSnapshot: FSharpProjectSnapshot) parsedInputs (tcConfig: TcConfig) =
         let key = priorSnapshot.SourceFiles.Key(DependencyGraphType.File) 
         //let lastFileIndex = (parsedInputs |> Array.length) - 1
-        //DependencyGraphCache.Get(key, computeDependencyGraph parsedInputs tcConfig (Graph.subGraphFor lastFileIndex))
-        DependencyGraphCache.Get(key, computeDependencyGraph parsedInputs tcConfig (removeImplFilesThatHaveSignaturesExceptLastOne priorSnapshot))
+        //caches.DependencyGraph.Get(key, computeDependencyGraph parsedInputs tcConfig (Graph.subGraphFor lastFileIndex))
+        caches.DependencyGraph.Get(key, computeDependencyGraph parsedInputs tcConfig (removeImplFilesThatHaveSignaturesExceptLastOne priorSnapshot))
 
     let ComputeDependencyGraphForProject (projectSnapshot: FSharpProjectSnapshot) parsedInputs (tcConfig: TcConfig) =
         let key = projectSnapshot.SourceFiles.Key(DependencyGraphType.Project)
-        //DependencyGraphCache.Get(key, computeDependencyGraph parsedInputs tcConfig (removeImplFilesThatHaveSignatures projectSnapshot))
-        DependencyGraphCache.Get(key, computeDependencyGraph parsedInputs tcConfig id)
+        //caches.DependencyGraph.Get(key, computeDependencyGraph parsedInputs tcConfig (removeImplFilesThatHaveSignatures projectSnapshot))
+        caches.DependencyGraph.Get(key, computeDependencyGraph parsedInputs tcConfig id)
 
     let ComputeTcIntermediate
         (projectSnapshot: FSharpProjectSnapshot)
@@ -978,15 +976,28 @@ type internal TransparentCompiler
         //let dependencyFiles = dependencyGraph |> Graph.subGraphFor fileIndex |> Graph.nodes
         ignore dependencyGraph
 
-        TcIntermediateCache.Get(
-            //projectSnapshot.OnlyWith(dependencyFiles).Key,
-            projectSnapshot.UpTo(fileIndex).WithoutImplFilesThatHaveSignaturesExceptLastOne.Key,
+        //let key =
+        //    { new ICacheKey<_, _> with
+        //        member _.GetLabel() = parsedInput.FileName |> shortPath
+        //        member _.GetKey() = (projectSnapshot.ProjectFileName, fileIndex)
+        //        member _.GetVersion() = 
+        //            //projectSnapshot.OnlyWith(dependencyFiles).Key,
+        //            projectSnapshot.UpTo(fileIndex).WithoutImplFilesThatHaveSignaturesExceptLastOne.Key.GetVersion() }
+
+        let key = projectSnapshot.FileKey parsedInput.FileName
+
+        caches.TcIntermediate.Get(
+            key,
             cancellableTask {
                 let input = parsedInput
                 let fileName = input.FileName
 
                 use _ =
-                    Activity.start "ComputeTcIntermediate" [| Activity.Tags.fileName, fileName |> Path.GetFileName |]
+                    Activity.start "ComputeTcIntermediate" [| 
+                        Activity.Tags.fileName, fileName |> Path.GetFileName 
+                        "key", key.GetKey() |> sprintf "%A"
+                        "version", key.GetVersion()
+                    |]
 
                 let tcConfig = bootstrapInfo.TcConfig
                 let tcGlobals = bootstrapInfo.TcGlobals
@@ -1163,10 +1174,9 @@ type internal TransparentCompiler
     let ComputeTcFile (file: FSharpFile) (bootstrapInfo: BootstrapInfo) (projectSnapshot: FSharpProjectSnapshot) =
 
         let priorSnapshot = projectSnapshot.UpTo file.Source.FileName
-        let key = priorSnapshot.WithoutImplFilesThatHaveSignaturesExceptLastOne.Key
 
-        TcFileCache.Get(
-            key,
+        caches.TcFile.Get(
+            priorSnapshot.FileKey file.Source.FileName,
             cancellableTask {
                 use _ =
                     Activity.start "ComputeTcFile" [| Activity.Tags.fileName, file.Source.FileName |> Path.GetFileName |]
@@ -1232,15 +1242,15 @@ type internal TransparentCompiler
         FSharpParseFileResults(diagnostics, parseTree, true, [||])
 
     let ComputeParseAndCheckFileInProject (fileName: string) (projectSnapshot: FSharpProjectSnapshot) =
-        let key = {
-            new ICacheKey<_, _> with 
-                member _.GetLabel() = $"{fileName |> shortPath} in {projectSnapshot.Key.GetLabel()}"
-                member _.GetKey() = fileName, projectSnapshot.Key.GetKey()
-                member _.GetVersion() = projectSnapshot.Key.GetVersion()
-        }
+        //let key = {
+        //    new ICacheKey<_, _> with 
+        //        member _.GetLabel() = $"{fileName |> shortPath} in {projectSnapshot.Key.GetLabel()}"
+        //        member _.GetKey() = fileName, projectSnapshot.Key.GetKey()
+        //        member _.GetVersion() = projectSnapshot.Key.GetVersion()
+        //}
 
-        ParseAndCheckFileInProjectCache.Get(
-            key,
+        caches.ParseAndCheckFileInProject.Get(
+            projectSnapshot.FileKey fileName,
             cancellableTask {
 
                 use _ =
@@ -1324,7 +1334,7 @@ type internal TransparentCompiler
         )
 
     let ComputeParseAndCheckAllFilesInProject (bootstrapInfo: BootstrapInfo) (projectSnapshot: FSharpProjectSnapshot) =
-        ParseAndCheckAllFilesInProjectCache.Get(
+        caches.ParseAndCheckAllFilesInProject.Get(
             projectSnapshot.Key,
             cancellableTask {
                 use _ =
@@ -1352,7 +1362,7 @@ type internal TransparentCompiler
         )
 
     let ComputeProjectExtras (bootstrapInfo: BootstrapInfo) (projectSnapshot: FSharpProjectSnapshot) =
-        ProjectExtrasCache.Get(
+        caches.ProjectExtras.Get(
             projectSnapshot.WithoutImplFilesThatHaveSignatures.Key,
             cancellableTask {
                 let! results, finalInfo = ComputeParseAndCheckAllFilesInProject bootstrapInfo projectSnapshot
@@ -1445,7 +1455,7 @@ type internal TransparentCompiler
         )
 
     let ComputeGetAssemblyData (projectSnapshot: FSharpProjectSnapshot) =
-        AssemblyDataCache.Get(
+        caches.AssemblyData.Get(
             projectSnapshot.WithoutImplFilesThatHaveSignatures.Key,
             cancellableTask {
                 match! ComputeBootstrapInfo projectSnapshot with
@@ -1457,7 +1467,7 @@ type internal TransparentCompiler
         )
 
     let ComputeParseAndCheckProject (projectSnapshot: FSharpProjectSnapshot) =
-        ParseAndCheckProjectCache.Get(
+        caches.ParseAndCheckProject.Get(
             projectSnapshot.Key,
             cancellableTask {
 
@@ -1537,10 +1547,9 @@ type internal TransparentCompiler
         }
 
     let ComputeSemanticClassification (fileName: string, projectSnapshot: FSharpProjectSnapshot) =
-        let key = (projectSnapshot.UpTo fileName).Key
 
-        SemanticClassificationCache.Get(
-            key,
+        caches.SemanticClassification.Get(
+            projectSnapshot.FileKey fileName,
             cancellableTask {
                 use _ =
                     Activity.start "ComputeSemanticClassification" [| Activity.Tags.fileName, fileName |> Path.GetFileName |]
@@ -1569,10 +1578,9 @@ type internal TransparentCompiler
         )
 
     let ComputeItemKeyStore (fileName: string, projectSnapshot: FSharpProjectSnapshot) =
-        let key = (projectSnapshot.UpTo fileName).Key
-
-        ItemKeyStoreCache.Get(
-            key,
+        
+        caches.ItemKeyStore.Get(
+            projectSnapshot.FileKey fileName,
             cancellableTask {
                 use _ =
                     Activity.start "ComputeItemKeyStore" [| Activity.Tags.fileName, fileName |> Path.GetFileName |]
@@ -1638,9 +1646,9 @@ type internal TransparentCompiler
             return! ComputeGetAssemblyData projectSnapshot ct |> NodeCode.AwaitTask
         }
 
-    interface IBackgroundCompiler with
+    member _.Caches = caches
 
-        member _.CacheEvent = cacheEvent.Publish
+    interface IBackgroundCompiler with
 
         member this.BeforeBackgroundFileCheck: IEvent<string * FSharpProjectOptions> =
             backgroundCompiler.BeforeBackgroundFileCheck

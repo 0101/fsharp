@@ -277,7 +277,13 @@ type FSharpProjectSnapshot =
 
     member this.Key = this :> ICacheKey<_, _>
 
-    interface ICacheKey<string, byte array> with
+    member this.FileKey(fileName) = 
+        { new ICacheKey<_, _> with
+            member _.GetLabel() = fileName |> shortPath
+            member _.GetKey() = fileName, this.Key.GetKey()
+            member _.GetVersion() = this.UpTo(fileName).WithoutImplFilesThatHaveSignaturesExceptLastOne.Key.GetVersion() }
+
+    interface ICacheKey<string, string> with
         member this.GetLabel() = this.ToString()
         member this.GetKey() = this.ProjectFileName
         member this.GetVersion() = 

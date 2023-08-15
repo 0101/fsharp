@@ -10,6 +10,7 @@ open System.Threading
 open System.Threading.Tasks
 open FSharp.Compiler.AbstractIL.ILBinaryReader
 open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.CodeAnalysis.TransparentCompiler
 open FSharp.Compiler.CompilerConfig
 open FSharp.Compiler.Diagnostics
 open FSharp.Compiler.EditorServices
@@ -451,7 +452,9 @@ type public FSharpChecker =
     /// The event may be raised on a background thread.
     member ProjectChecked: IEvent<FSharpProjectOptions>
 
-    member internal CacheEvent: IEvent<string * Internal.Utilities.Collections.JobEvent * obj>
+    member internal TransparentCompiler: TransparentCompiler
+
+    member internal Caches: CompilerCaches
 
     [<Obsolete("Please create an instance of FSharpChecker using FSharpChecker.Create")>]
     static member Instance: FSharpChecker

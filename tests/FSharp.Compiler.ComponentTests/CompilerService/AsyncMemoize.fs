@@ -15,9 +15,7 @@ open Microsoft.VisualStudio.FSharp.Editor.CancellableTasks
 [<Fact>]
 let ``Stack trace`` () =
 
-    let eventLog = ResizeArray()
-
-    let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ -> eventLog.Add))
+    let memoize = AsyncMemoize<int, int, int>()
 
     let computation key = cancellableTask {
        // do! Async.Sleep 1 |> NodeCode.AwaitAsync
@@ -47,7 +45,8 @@ let ``Basics``() =
 
     let eventLog = ResizeArray()
 
-    let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ (e, (_label, k, _version)) -> eventLog.Add (e, k)))
+    let memoize = AsyncMemoize<int, int, int>()
+    memoize.OnEvent(fun (e, (_label, k, _version)) -> eventLog.Add (e, k))
 
     let ct = CancellationToken.None
 
@@ -86,7 +85,8 @@ let ``We can cancel a job`` () =
         }
 
         let eventLog = ResizeArray()
-        let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ (e, (_, k, _version)) -> eventLog.Add (e, k)))
+        let memoize = AsyncMemoize<int, int, int>()
+        memoize.OnEvent(fun (e, (_label, k, _version)) -> eventLog.Add (e, k))
 
         use cts1 = new CancellationTokenSource()
         use cts2 = new CancellationTokenSource()
@@ -138,7 +138,8 @@ let ``Job is restarted if first requestor cancels`` () =
         }
 
         let eventLog = ConcurrentBag()
-        let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ (e, (_, k, _version)) -> eventLog.Add (DateTime.Now.Ticks, (e, k))))
+        let memoize = AsyncMemoize<int, int, int>()
+        memoize.OnEvent(fun (e, (_, k, _version)) -> eventLog.Add (DateTime.Now.Ticks, (e, k)))
 
         use cts1 = new CancellationTokenSource()
         use cts2 = new CancellationTokenSource()
@@ -184,7 +185,8 @@ let ``Job is restarted if first requestor cancels but keeps running if second re
         }
 
         let eventLog = ConcurrentBag()
-        let memoize = AsyncMemoize<int, int, int>(logEvent=(fun _ (e, (_, k, _version)) -> eventLog.Add (DateTime.Now.Ticks, (e, k))))
+        let memoize = AsyncMemoize<int, int, int>()
+        memoize.OnEvent(fun (e, (_label, k, _version)) -> eventLog.Add (DateTime.Now.Ticks, (e, k)))
 
         use cts1 = new CancellationTokenSource()
         use cts2 = new CancellationTokenSource()
