@@ -261,7 +261,24 @@ module internal Md5Hasher =
 
     let addBool (b: bool) (s: string) =
         b |> BitConverter.GetBytes |> addBytes <| s
-    
+
+
+type AsyncLock() =
+
+    let semaphore = new SemaphoreSlim(1, 1)
+
+    member _.Do(f) =
+        task {
+            do! semaphore.WaitAsync()
+            try
+                return! f()
+            finally
+                semaphore.Release() |> ignore
+        }
+
+    interface IDisposable with
+        member _.Dispose() = semaphore.Dispose()
+
 
 type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVersion: equality>(?keepStrongly, ?keepWeakly, ?name: string) =
 
@@ -311,140 +328,147 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'T
     let log (eventType, keyData: KeyData<_, _>) =
         event.Trigger(eventType, (keyData.Label, keyData.Key, keyData.Version))
 
-    let gate = obj()
+    let lock = new AsyncLock()
 
     let processRequest post (key: KeyData<_, _>, msg) =
 
-        lock gate (fun () ->
+        lock.Do(fun () -> task {
 
             let cached = cache.TryGet (key.Key, key.Version)
 
             // System.Diagnostics.Trace.TraceInformation $"[{key}] GetOrCompute {cached}"
+            return
+                match msg, cached with
+                | Sync, _ -> New
+                | GetOrCompute _, Some (Completed result) -> Existing (Task.FromResult result)
+                | GetOrCompute(_, ct), Some (Running (tcs, _, _)) ->
+                    incrRequestCount key
 
-            match msg, cached with
-            | Sync, _ -> New
-            | GetOrCompute _, Some (Completed result) -> Existing (Task.FromResult result)
-            | GetOrCompute(_, ct), Some (Running (tcs, _, _)) ->
-                incrRequestCount key
+                    ct.Register(fun _ ->
+                        let _name = name
+                        post (key, CancelRequest))
+                        |> saveRegistration key
 
-                ct.Register(fun _ ->
-                    let _name = name
-                    post (key, CancelRequest))
-                    |> saveRegistration key
+                    Existing tcs.Task
 
-                Existing tcs.Task
+                | GetOrCompute(computation, ct), None ->
+                    incrRequestCount key
 
-            | GetOrCompute(computation, ct), None ->
-                incrRequestCount key
+                    ct.Register(fun _ ->
+                        let _name = name
+                        post (key, OriginatorCanceled))
+                        |> saveRegistration key
 
-                ct.Register(fun _ ->
-                    let _name = name
-                    post (key, OriginatorCanceled))
-                    |> saveRegistration key
+                    cache.Set(key.Key, key.Version, key.Label, (Running(TaskCompletionSource(), (new CancellationTokenSource()), computation)))
 
-                cache.Set(key.Key, key.Version, key.Label, (Running(TaskCompletionSource(), (new CancellationTokenSource()), computation)))
+                    New
+        })
 
-                New
-        )
+    let processStateUpdate post (key: KeyData<_, _>, action: StateUpdate<_>) = 
+        task {
 
-    let processStateUpdate post (key: KeyData<_, _>, action: StateUpdate<_>) =
+            do! Task.Delay 0
+            do! lock.Do(fun () -> task {
 
-        lock gate (fun () ->
+                let cached = cache.TryGet (key.Key, key.Version)
 
+                // System.Diagnostics.Trace.TraceInformation $"[{key}] {action} {cached}"
 
-        let cached = cache.TryGet (key.Key, key.Version)
+                match action, cached with
 
-        // System.Diagnostics.Trace.TraceInformation $"[{key}] {action} {cached}"
+                | OriginatorCanceled, Some (Running (tcs, cts, computation)) ->
 
-        match action, cached with
+                    decrRequestCount key
+                    if requestCounts[key] < 1 then
+                        cancelRegistration key
+//                        cts.Cancel()
+                        tcs.TrySetCanceled() |> ignore
+                        cache.Remove (key.Key, key.Version)
+                        requestCounts.Remove key |> ignore
+                        log (Canceled, key)
 
-        | OriginatorCanceled, Some (Running (tcs, cts, computation)) ->
+                    else
+                        // We need to restart the computation
+                        Task.Run(fun () ->
+                            task {
+                                do! Task.Delay 0
+                                try
+                                    log (Started, key)
+                                    let! result = computation cts.Token
+                                    post (key, (JobCompleted result))
+                                with
+                                | :? OperationCanceledException ->
+                                    post (key, CancelRequest)
+                                    ()
+                                | ex ->
+                                    post (key, (JobFailed ex))
+                            }, cts.Token) |> ignore
 
-            decrRequestCount key
-            if requestCounts[key] < 1 then
-                cancelRegistration key
-                cts.Cancel()
-                tcs.TrySetCanceled() |> ignore
-                cache.Remove (key.Key, key.Version)
-                requestCounts.Remove key |> ignore
-                log (Canceled, key)
+                | OriginatorCanceled, None -> ()
 
-            else
-                // We need to restart the computation
-                Task.Run(fun () ->
-                    task {
-                        try
-                            log (Started, key)
-                            let! result = computation cts.Token
-                            post (key, (JobCompleted result))
-                        with
-                        | :? OperationCanceledException ->
-                            post (key, CancelRequest)
-                        | ex ->
-                            post (key, (JobFailed ex))
-                    }, cts.Token) |> ignore
+                    // Shouldn't happen, unless we allow evicting Running jobs from cache
 
-        | OriginatorCanceled, None -> ()
+                | CancelRequest, Some (Running (tcs, _cts, _c)) ->
 
-            // Shouldn't happen, unless we allow evicting Running jobs from cache
+                    decrRequestCount key
+                    if requestCounts[key] < 1 then
+                        cancelRegistration key
+//                        cts.Cancel()
+                        tcs.TrySetCanceled() |> ignore
+                        cache.Remove (key.Key, key.Version)
+                        requestCounts.Remove key |> ignore
+                        log (Canceled, key)
 
-        | CancelRequest, Some (Running (tcs, cts, _c)) ->
+                | CancelRequest, None
+                | CancelRequest, Some (Completed _) -> ()
 
-            decrRequestCount key
-            if requestCounts[key] < 1 then
-                cancelRegistration key
-                cts.Cancel()
-                tcs.TrySetCanceled() |> ignore
-                cache.Remove (key.Key, key.Version)
-                requestCounts.Remove key |> ignore
-                log (Canceled, key)
+                | JobFailed ex, Some (Running (tcs, _cts, _c)) ->
+                    // TODO: should we restart if there are more requests?
+                    cancelRegistration key
+                    cache.Remove (key.Key, key.Version)
+                    requestCounts.Remove key |> ignore
+                    log (Failed, key)
+                    tcs.TrySetException ex |> ignore
 
-        | CancelRequest, None
-        | CancelRequest, Some (Completed _) -> ()
+                | JobCompleted result, Some (Running (tcs, _cts, _c)) ->
+                    cancelRegistration key
+                    cache.Set(key.Key, key.Version, key.Label, (Completed result))
+                    requestCounts.Remove key |> ignore
+                    log (Finished, key)
+                    if tcs.TrySetResult result = false then
+                        // failwith "Invalid state: Completed job already completed"
+                        ()
 
-        | JobFailed ex, Some (Running (tcs, _cts, _c)) ->
-            // TODO: should we restart if there are more requests?
-            cancelRegistration key
-            cache.Remove (key.Key, key.Version)
-            requestCounts.Remove key |> ignore
-            log (Failed, key)
-            tcs.TrySetException ex |> ignore
+                // Job can't be evicted from cache while it's running because then subsequent requesters would be waiting forever
+                // ???
+                | JobFailed _, None  -> 
+                    // failwith "Invalid state: Running job missing in cache (failed)"
+                    ()
 
-        | JobCompleted result, Some (Running (tcs, _cts, _c)) ->
-            cancelRegistration key
-            cache.Set(key.Key, key.Version, key.Label, (Completed result))
-            requestCounts.Remove key |> ignore
-            log (Finished, key)
-            tcs.SetResult result
+                //| OriginatorCanceled, None
+                | JobCompleted _, None ->
+                    // failwith "Invalid state: Running job missing in cache (completed)"
+                    ()
 
-        // Job can't be evicted from cache while it's running because then subsequent requesters would be waiting forever
-        // ???
-        | JobFailed _, None  -> ()
+                | JobFailed ex, Some (Completed _job) ->
+                    // failwith $"Invalid state: Failed Completed job \n%A{ex}"
+                    ignore ex
 
-        //| OriginatorCanceled, None
-        | JobCompleted _, None ->
-            //failwith "Invalid state: Running job missing in cache"
-            ()
+                | JobCompleted _result, Some (Completed _job) ->
+                    // failwith "Invalid state: Double-Completed job"
+                    ()
 
-        | JobFailed ex, Some (Completed _job) ->
-            //failwith $"Invalid state: Failed Completed job \n%A{ex}"
-            ignore ex
-
-        | JobCompleted _result, Some (Completed _job) ->
-            //failwith "Invalid state: Double-Completed job"
-            ()
-
-        | OriginatorCanceled, Some (Completed _result) ->
-            //failwith "Invalid state: Canceled Completed job"
-            ()
-
-        )
+                | OriginatorCanceled, Some (Completed _result) ->
+                    // failwith "Invalid state: Canceled Completed job"
+                    ()
+            })
+        }
 
     //let agent =
     //    new TaskAgent<'TKey * MemoizeRequest<'TValue>, 'TKey * StateUpdate<'TValue>, MemoizeReply<'TValue>>(processRequest, processStateUpdate)
 
     let rec post msg =
-        Task.Run(fun () -> processStateUpdate post msg) |> ignore
+        Task.Run(fun () -> processStateUpdate post msg :> Task) |> ignore
 
     member this.Get'(key, computation) =
 
@@ -462,7 +486,8 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'T
         cancellableTask {
             let! ct = CancellableTask.getCancellationToken()
 
-            match processRequest post (key, GetOrCompute(computation, ct)) with
+            let! x = processRequest post (key, GetOrCompute(computation, ct))
+            match x with
             | New ->
 
                 try
@@ -484,7 +509,7 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'T
 
     member val Event = event.Publish
 
-    member this.OnEvent = this.Event.Add 
+    member this.OnEvent = this.Event.Add
 
 
     //member this.Get(key, computation) =
