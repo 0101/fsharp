@@ -128,7 +128,7 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
             strongList.AddFirst node
             cutStrongListIfTooLong()
         | _, _, _, Weak _ ->
-            failwith "Invalid operation, pusing weak reference to strong list"
+            failwith "Invalid operation, pushing weak reference to strong list"
 
     let pushValueToTop key version label value =
         let node = strongList.AddFirst(value=(key, version, label, Strong value))
@@ -156,22 +156,25 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
             else
                 let node = pushValueToTop key version label value
                 versionDict[version] <- node
-                // weaken all other versions
+                // weaken all other versions (unless they're required to be kept)
                 for otherVersion in versionDict.Keys do
                     if otherVersion <> version then
                         let node = versionDict[otherVersion]
                         match node.Value with
-                        | _, _, _, Strong value ->
+                        | _, _, _, Strong value when not (requiredToKeep value) ->
                             strongList.Remove node
                             node.Value <- key, otherVersion, label, Weak (WeakReference<_> value)
                             weakList.AddFirst node
                             event CacheEvent.Weakened (label, key, otherVersion)
-                        | _, _, _, Weak _ -> ()
+                            cutWeakListIfTooLong()
+                        | _ -> ()
 
         | false, _ ->
             let node = pushValueToTop key version label value
             dictionary[key] <- Dictionary()
             dictionary[key][version] <- node
+
+    member this.Set(key, version, value) = this.Set(key, version, "[no label]", value)
 
     member _.TryGet(key, version) =
 
@@ -217,14 +220,14 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
                 | _, _, _, Weak _ -> weakList.Remove node
             | _ -> ()
 
-    //member this.Set(key, value) =
-    //    this.Set(key, Unchecked.defaultof<_>, value)
+    member this.Set(key, value) =
+        this.Set(key, Unchecked.defaultof<_>, value)
 
-    //member this.TryGet(key) =
-    //    this.TryGet(key, Unchecked.defaultof<_>)
+    member this.TryGet(key) =
+        this.TryGet(key, Unchecked.defaultof<_>)
 
-    //member this.Remove(key) =
-    //    this.Remove(key, Unchecked.defaultof<_>)
+    member this.Remove(key) =
+        this.Remove(key, Unchecked.defaultof<_>)
 
 
 type internal ICacheKey<'TKey, 'TVersion> =

@@ -68,13 +68,13 @@ module ReferenceHelpers =
         }
         |> String.concat "\n"
 
-    let runtimeList = lazy (            
+    let runtimeList = lazy (
         // You can see which versions of the .NET runtime are currently installed with the following command.
         let psi =
             ProcessStartInfo("dotnet", "--list-runtimes", RedirectStandardOutput = true, UseShellExecute = false)
 
         let proc = Process.Start(psi)
-        proc.WaitForExit()
+        proc.WaitForExit(1000) |> ignore
 
         let output =
             seq {

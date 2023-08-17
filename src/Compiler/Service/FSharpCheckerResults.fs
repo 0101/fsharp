@@ -269,15 +269,16 @@ type FSharpProjectSnapshot =
     member this.WithoutFileVersions =
         { this with
             SourceFiles = this.SourceFiles |> List.map (fun x -> { x with Version = "" })
+            // TODO: ReferencedProjects without file versions?
         }
 
     override this.ToString() =
-        Path.GetFileNameWithoutExtension this.ProjectFileName 
+        Path.GetFileNameWithoutExtension this.ProjectFileName
         |> sprintf "FSharpProjectSnapshot(%s)"
 
     member this.Key = this :> ICacheKey<_, _>
 
-    member this.FileKey(fileName) = 
+    member this.FileKey(fileName) =
         { new ICacheKey<_, _> with
             member _.GetLabel() = fileName |> shortPath
             member _.GetKey() = fileName, this.Key.GetKey()
@@ -291,7 +292,7 @@ type FSharpProjectSnapshot =
             |> Md5Hasher.addString this.ProjectFileName
             |> Md5Hasher.addStrings (this.SourceFiles |> Seq.map (fun x -> x.Version))
             |> Md5Hasher.addStrings this.OtherOptions
-            |> Md5Hasher.addVersions (this.ReferencedProjects |> Seq.map (fun x -> x.Key))
+            |> Md5Hasher.addVersions (this.ReferencedProjects |> Seq.map (fun (FSharpReference (_name, p)) -> p.WithoutImplFilesThatHaveSignatures.Key))
             |> Md5Hasher.addBool this.IsIncompleteTypeCheckEnvironment
             |> Md5Hasher.addBool this.UseScriptResolutionRules
 

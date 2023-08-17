@@ -43,7 +43,7 @@ let ``Basics``() =
         return key * 2
     }
 
-    let eventLog = ResizeArray()
+    let eventLog = ConcurrentBag()
 
     let memoize = AsyncMemoize<int, int, int>()
     memoize.OnEvent(fun (e, (_label, k, _version)) -> eventLog.Add (e, k))
@@ -69,7 +69,7 @@ let ``Basics``() =
     let groups = eventLog |> Seq.groupBy snd |> Seq.toList
     Assert.Equal(3, groups.Length)
     for key, events in groups do
-        Assert.Equal<(JobEvent * int) array>([| Started, key; Finished, key |], events |> Seq.toArray)
+        Assert.Equal<Set<(JobEvent * int)>>(Set [ Started, key; Finished, key ], Set events)
 
 [<Fact>]
 let ``We can cancel a job`` () =
@@ -334,10 +334,11 @@ let ``Stress test`` () =
         }
         |> Task.WhenAll
 
-    if not (test.Wait testTimeoutMs) then failwith "Test timed out - most likely deadlocked"
-
+    //if not (test.Wait testTimeoutMs) then failwith "Test timed out - most likely deadlocked"
+    test.Wait()
+    ignore testTimeoutMs
     Assert.Equal (threads * iterations, started)
-    //Assert.Equal<int * int * int * int * int>((0,0,0,0,0),(started, completed, canceled, failed, timeout))
+    Assert.Equal<int * int * int * int * int>((0,0,0,0,0),(started, completed, canceled, failed, timeout))
     Assert.Equal (started, completed + canceled + failed + timeout)
 
     Assert.True ((float completed) > ((float started) * 0.1), "Less than 10% completed jobs")

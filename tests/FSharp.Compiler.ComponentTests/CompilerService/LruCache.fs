@@ -6,7 +6,6 @@ open System
 open System.Threading
 open System.Runtime.CompilerServices
 
-(*
 [<Fact>]
 let ``Adding an item to the cache should make it retrievable``() =
     let cache = new LruCache<int, int, string>(keepStrongly = 2)
@@ -76,47 +75,43 @@ let ``Adding an item to the cache should evict a weakly kept item if its referen
     GC.Collect(2, GCCollectionMode.Forced, true)
 
     let result = cache.TryGet(1)
-    Assert.Null(result)
+    Assert.True(result.IsNone)
+
 
 [<Fact>]
-let ``Moving a value from strongly to weakly kept and vice versa should work correctly``() =
-    let cache = new LruCache<int, int, string>(keepStrongly = 2, keepWeakly = 2)
-    cache.Set(1, "one")
-    cache.Set(2, "two")
-    cache.Set(3, "three")
-    //let result1 = cache.TryGet(1)
-    Assert.Equal("one", cache.TryGet(1).Value)
-    let result2 = cache.TryGet(2)
-    Assert.Equal("two", result2.Value)
-    let result3 = cache.TryGet(3)
-    Assert.Equal("three", result3.Value)
-    cache.Set(1, "one")
-    cache.Set(2, "two")
-    cache.Set(3, "three")
-    GC.Collect(2, GCCollectionMode.Forced, true)
-    let result1 = cache.TryGet(1)
-    Assert.Null(result1)
-    let result2 = cache.TryGet(2)
-    Assert.Equal("two", result2.Value)
-    let result3 = cache.TryGet(3)
-    Assert.Equal("three", result3.Value)
-    cache.Set(2, "two")
-    GC.Collect(2, GCCollectionMode.Forced, true)
-    let result1 = cache.TryGet(1)
-    Assert.Null(result1)
-    let result2 = cache.TryGet(2)
-    Assert.Equal("two", result2.Value)
-    let result3 = cache.TryGet(3)
-    Assert.Null(result3)
-    cache.Set(1, "one")
-    cache.Set(2, "two")
-    cache.Set(3, "three")
-    GC.Collect(2, GCCollectionMode.Forced, true)
-    let result1 = cache.TryGet(1)
-    Assert.Null(result1)
-    let result2 = cache.TryGet(2)
-    Assert.Equal("two", result2.Value)
-    let result3 = cache.TryGet(3)
-    Assert.Equal("three", result3.Value)
+let ``When a new version is added other versions get weakened`` () =
+    let eventLog = ResizeArray()
 
-    *)
+    let cache = new LruCache<_, int, _>(keepStrongly = 2, keepWeakly = 2, event = (fun e v -> eventLog.Add(e, v)))
+
+    cache.Set(1, 1, "one1")
+    cache.Set(1, 2, "one2")
+    cache.Set(1, 3, "one3")
+    cache.Set(1, 4, "one4")
+
+    let expected = [
+        CacheEvent.Weakened, ("[no label]", 1, 1)
+        CacheEvent.Weakened, ("[no label]", 1, 2)
+        CacheEvent.Weakened, ("[no label]", 1, 3)
+        CacheEvent.Evicted, ("[no label]", 1, 1)
+    ]
+
+    Assert.Equal<list<_>>(expected, eventLog |> Seq.toList)
+
+[<Fact>]
+let ``When a new version is added other versions don't get weakened when they're required to keep`` () =
+    let eventLog = ResizeArray()
+
+    let cache = new LruCache<_, int, _>(keepStrongly = 2, keepWeakly = 2, requiredToKeep = ((=) "one1"), event = (fun e v -> eventLog.Add(e, v)))
+
+    cache.Set(1, 1, "one1")
+    cache.Set(1, 2, "one2")
+    cache.Set(1, 3, "one3")
+    cache.Set(1, 4, "one4")
+
+    let expected = [
+        CacheEvent.Weakened, ("[no label]", 1, 2)
+        CacheEvent.Weakened, ("[no label]", 1, 3)
+    ]
+
+    Assert.Equal<list<_>>(expected, eventLog |> Seq.toList)

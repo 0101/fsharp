@@ -1,6 +1,7 @@
 ﻿module internal FSharp.Compiler.GraphChecking.GraphProcessing
 
 open System.Threading
+open FSharp.Compiler.GraphChecking
 
 /// Information about the node in a graph, describing its relation with other nodes.
 type NodeInfo<'Item> =
@@ -31,6 +32,9 @@ type ProcessedNode<'Item, 'Result> =
         Info: NodeInfo<'Item>
         Result: 'Result
     }
+
+type GraphProcessingException(msg, ex: System.Exception) =
+    inherit exn(msg, ex)
 
 let processGraph<'Item, 'Result when 'Item: equality and 'Item: comparison>
     (graph: Graph<'Item>)
@@ -150,7 +154,7 @@ let processGraph<'Item, 'Result when 'Item: equality and 'Item: comparison>
     // If we stopped early due to an exception, reraise it.
     match getExn () with
     | None -> ()
-    | Some (item, ex) -> raise (System.Exception($"Encountered exception when processing item '{item}'", ex))
+    | Some (item, ex) -> raise (GraphProcessingException($"Encountered exception when processing item '{item}'", ex))
 
     // All calculations succeeded - extract the results and sort in input order.
     nodes.Values
@@ -285,7 +289,7 @@ let processGraphAsync<'Item, 'Result when 'Item: equality and 'Item: comparison>
         // If we stopped early due to an exception, reraise it.
         match getExn () with
         | None -> ()
-        | Some (item, ex) -> raise (System.Exception($"Encountered exception when processing item '{item}'", ex))
+        | Some (item, ex) -> raise (GraphProcessingException($"XX Encountered exception when processing item '{item}'", ex))
 
         // All calculations succeeded - extract the results and sort in input order.
         return
