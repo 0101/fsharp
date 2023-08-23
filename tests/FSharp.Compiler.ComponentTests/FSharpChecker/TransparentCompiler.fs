@@ -16,7 +16,6 @@ open Microsoft.CodeAnalysis
 open System
 open System.Threading.Tasks
 open System.Threading
-open Microsoft.VisualStudio.FSharp.Editor.CancellableTasks
 open TypeChecks
 
 
@@ -514,7 +513,7 @@ let fuzzingTest seed (project: SyntheticProject) = task {
 
     let exceptions = ConcurrentBag()
 
-    let modificationLoop = cancellableTask {
+    let modificationLoop _ = task {
         for _ in 1 .. modificationLoopIterations do
             do! Task.Delay (rng.Next maxModificationDelayMs)
             let modify project =
@@ -542,7 +541,7 @@ let fuzzingTest seed (project: SyntheticProject) = task {
 
     //checker.Caches.TcIntermediate.OnEvent(fun (event, (label, key, version)) -> ())
 
-    let checkingLoop n = cancellableTask {
+    let checkingLoop n _ = task {
         for _ in 1 .. checkingLoopIterations do
             let! project = getProject()
             let p, file = project |> getRandomFile
@@ -558,13 +557,13 @@ let fuzzingTest seed (project: SyntheticProject) = task {
                 log.Value.Add (DateTime.Now.Ticks, FinishedChecking (match checkResult with FSharpCheckFileAnswer.Succeeded _ -> true | _ -> false),  $"Loop #{n} {file.Id}")
                 expectOk (parseResult, checkResult) ()
             with ex ->
-                let message = 
+                let message =
                     match ex with
                     | :? AggregateException as e ->
                         match e.InnerException with
                         | :? GraphProcessingException as e -> $"GPE: {e.InnerException.Message}"
                         | _ -> e.Message
-                    | _ -> ex.Message   
+                    | _ -> ex.Message
                 log.Value.Add (DateTime.Now.Ticks, AbortedChecking (message), $"Loop #{n} {file.Id} %A{ex}")
                 if ex.Message <> "A task was canceled." then exceptions.Add ex
 

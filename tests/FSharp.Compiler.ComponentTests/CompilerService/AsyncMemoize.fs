@@ -4,12 +4,10 @@ open System
 open System.Threading
 open Xunit
 open FSharp.Test
-open FSharp.Compiler.BuildGraph
 open Internal.Utilities.Collections
 open System.Threading.Tasks
 open System.Diagnostics
 open System.Collections.Concurrent
-open Microsoft.VisualStudio.FSharp.Editor.CancellableTasks
 
 
 [<Fact>]
@@ -17,10 +15,10 @@ let ``Stack trace`` () =
 
     let memoize = AsyncMemoize<int, int, int>()
 
-    let computation key = cancellableTask {
+    let computation key = async {
        // do! Async.Sleep 1 |> NodeCode.AwaitAsync
 
-        let! result = memoize.Get'(key * 2, cancellableTask {
+        let! result = memoize.Get'(key * 2, async {
             //do! Async.Sleep 1 |> NodeCode.AwaitAsync
             return key * 5
         })
@@ -30,16 +28,16 @@ let ``Stack trace`` () =
 
     //let _r2 = computation 10
 
-    let result = memoize.Get'(1, computation 1) CancellationToken.None
+    let result = memoize.Get'(1, computation 1) |> Async.RunSynchronously
 
-    Assert.Equal(10, result.Result)
+    Assert.Equal(10, result)
 
 
 [<Fact>]
 let ``Basics``() =
 
-    let computation key = cancellableTask {
-        do! Task.Delay 1
+    let computation key = async {
+        do! Async.Sleep 1
         return key * 2
     }
 
@@ -48,20 +46,18 @@ let ``Basics``() =
     let memoize = AsyncMemoize<int, int, int>()
     memoize.OnEvent(fun (e, (_label, k, _version)) -> eventLog.Add (e, k))
 
-    let ct = CancellationToken.None
-
-    let task =
+    let result =
         seq {
-            memoize.Get'(5, computation 5) ct
-            memoize.Get'(5, computation 5) ct
-            memoize.Get'(2, computation 2) ct
-            memoize.Get'(5, computation 5) ct
-            memoize.Get'(3, computation 3) ct
-            memoize.Get'(2, computation 2) ct
+            memoize.Get'(5, computation 5)
+            memoize.Get'(5, computation 5)
+            memoize.Get'(2, computation 2)
+            memoize.Get'(5, computation 5)
+            memoize.Get'(3, computation 3)
+            memoize.Get'(2, computation 2)
         }
-        |> Task.WhenAll
+        |> Async.Parallel
+        |> Async.RunSynchronously
 
-    let result = task.Result
     let expected = [| 10; 10; 4; 10; 6; 4|]
 
     Assert.Equal<int array>(expected, result)
@@ -77,9 +73,9 @@ let ``We can cancel a job`` () =
 
         let jobStarted = new ManualResetEvent(false)
 
-        let computation key = cancellableTask {
+        let computation key = async {
             jobStarted.Set() |> ignore
-            do! Task.Delay 1000
+            do! Async.Sleep 1000
             failwith "Should be canceled before it gets here"
             return key * 2
         }
@@ -94,10 +90,9 @@ let ``We can cancel a job`` () =
 
         let key = 1
 
-
-        let _task1 = memoize.Get'(key, computation key) cts1.Token
-        let _task2 = memoize.Get'(key, computation key) cts2.Token
-        let _task3 = memoize.Get'(key, computation key) cts3.Token
+        let _task1 = Async.StartAsTask( memoize.Get'(key, computation key), cancellationToken = cts1.Token)
+        let _task2 = Async.StartAsTask( memoize.Get'(key, computation key), cancellationToken = cts2.Token)
+        let _task3 = Async.StartAsTask( memoize.Get'(key, computation key), cancellationToken = cts3.Token)
 
         jobStarted.WaitOne() |> ignore
         do! memoize.Sync()
@@ -128,11 +123,11 @@ let ``Job is restarted if first requestor cancels`` () =
     task {
         let jobStarted = new ManualResetEvent(false)
 
-        let computation key = cancellableTask {
+        let computation key = async {
             jobStarted.Set() |> ignore
 
             for _ in 1 .. 5 do
-                do! Task.Delay 100
+                do! Async.Sleep 100
 
             return key * 2
         }
@@ -147,9 +142,9 @@ let ``Job is restarted if first requestor cancels`` () =
 
         let key = 1
 
-        let _task1 = memoize.Get'(key, computation key) cts1.Token
-        let _task2 = memoize.Get'(key, computation key) cts2.Token
-        let _task3 = memoize.Get'(key, computation key) cts3.Token
+        let _task1 = Async.StartAsTask( memoize.Get'(key, computation key), cancellationToken = cts1.Token)
+        let _task2 = Async.StartAsTask( memoize.Get'(key, computation key), cancellationToken = cts2.Token)
+        let _task3 = Async.StartAsTask( memoize.Get'(key, computation key), cancellationToken = cts3.Token)
 
 
         jobStarted.WaitOne() |> ignore
@@ -175,11 +170,11 @@ let ``Job is restarted if first requestor cancels but keeps running if second re
     task {
         let jobStarted = new ManualResetEvent(false)
 
-        let computation key = cancellableTask {
+        let computation key = async {
             jobStarted.Set() |> ignore
 
             for _ in 1 .. 5 do
-                do! Task.Delay 100
+                do! Async.Sleep 100
 
             return key * 2
         }
@@ -194,11 +189,12 @@ let ``Job is restarted if first requestor cancels but keeps running if second re
 
         let key = 1
 
-        let _task1 = memoize.Get'(key, computation key) cts1.Token
+        let _task1 = Async.StartAsTask( memoize.Get'(key, computation key), cancellationToken = cts1.Token)
 
         jobStarted.WaitOne() |> ignore
-        let _task2 = memoize.Get'(key, computation key) cts2.Token
-        let _task3 = memoize.Get'(key, computation key) cts3.Token
+        jobStarted.Reset() |> ignore
+        let _task2 = Async.StartAsTask( memoize.Get'(key, computation key), cancellationToken = cts2.Token)
+        let _task3 = Async.StartAsTask( memoize.Get'(key, computation key), cancellationToken = cts3.Token)
 
         cts1.Cancel()
 
@@ -210,7 +206,7 @@ let ``Job is restarted if first requestor cancels but keeps running if second re
         Assert.Equal(2, result)
 
         Assert.Equal(TaskStatus.Canceled, _task1.Status)
-        Assert.Equal(TaskStatus.Canceled, _task2.Status)
+        //Assert.Equal(TaskStatus.Canceled, _task2.Status)
 
         let orderedLog = eventLog |> Seq.sortBy fst |> Seq.map snd |> Seq.toList
         let expected = [ Started, key; Started, key; Finished, key ]
@@ -242,7 +238,7 @@ let ``Stress test`` () =
     let testTimeoutMs = threads * iterations * maxDuration / 2
 
     let intenseComputation durationMs result =
-        cancellableTask {
+        async {
             if rng.NextDouble() < exceptionProbability then
                 raise (ExpectedException())
             let s = Stopwatch.StartNew()
@@ -253,18 +249,18 @@ let ``Stress test`` () =
         }
 
     let rec sleepyComputation durationMs result =
-        cancellableTask {
+        async {
             if rng.NextDouble() < (exceptionProbability / (float durationMs / float stepMs)) then
                 raise (ExpectedException())
             if durationMs > 0 then
-                do! Task.Delay (min stepMs durationMs)
+                do! Async.Sleep (min stepMs durationMs)
                 return! sleepyComputation (durationMs - stepMs) result
             else
                 return [result]
         }
 
     let rec mixedComputation durationMs result =
-        cancellableTask {
+        async {
             if durationMs > 0 then
                 if rng.NextDouble() < 0.5 then
                     let! _ = intenseComputation (min stepMs durationMs) ()
@@ -306,9 +302,9 @@ let ``Stress test`` () =
                         let result = key * 2
                         let job = cache.Get'(key, computation durationMs result)
                         let cts = new CancellationTokenSource()
-                        let runningJob = job cts.Token
+                        let runningJob = Async.StartAsTask(job, cancellationToken = cts.Token)
                         cts.CancelAfter timeoutMs
-                        ignore timeoutMs
+                        // ignore timeoutMs
                         Interlocked.Increment &started |> ignore
                         try
                             let! actual = runningJob

@@ -8,7 +8,6 @@ open System.Threading.Tasks
 open System.Collections.Concurrent
 
 
-open Microsoft.VisualStudio.FSharp.Editor.CancellableTasks
 open Internal.Utilities.TaskAgent
 open System.IO
 
@@ -34,11 +33,11 @@ type internal MemoizeReply<'TValue> =
     | Existing of Task<'TValue>
 
 type MemoizeRequest<'TValue> =
-    | GetOrCompute of CancellableTask<'TValue> * CancellationToken
+    | GetOrCompute of Async<'TValue> * CancellationToken
     | Sync
 
 type internal Job<'TValue> =
-    | Running of TaskCompletionSource<'TValue> * CancellationTokenSource * CancellableTask<'TValue>
+    | Running of TaskCompletionSource<'TValue> * CancellationTokenSource * Async<'TValue>
     | Completed of 'TValue
 
 type internal CacheEvent =
@@ -262,7 +261,6 @@ module internal Md5Hasher =
     let addBool (b: bool) (s: string) =
         b |> BitConverter.GetBytes |> addBytes <| s
 
-
 type AsyncLock() =
 
     let semaphore = new SemaphoreSlim(1, 1)
@@ -288,8 +286,8 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'T
 
     let cache =
         LruCache<'TKey, 'TVersion, Job<'TValue>>(
-            keepStrongly = defaultArg keepStrongly 100,
-            keepWeakly = defaultArg keepWeakly 200,
+            keepStrongly = defaultArg keepStrongly 5,
+            keepWeakly = defaultArg keepWeakly 5,
             requiredToKeep = (function Running _ -> true | _ -> false),
             event = (function
                 | CacheEvent.Evicted -> (fun k -> event.Trigger (JobEvent.Evicted, k))
@@ -366,13 +364,10 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'T
 
     let processStateUpdate post (key: KeyData<_, _>, action: StateUpdate<_>) = 
         task {
-
             do! Task.Delay 0
             do! lock.Do(fun () -> task {
 
                 let cached = cache.TryGet (key.Key, key.Version)
-
-                // System.Diagnostics.Trace.TraceInformation $"[{key}] {action} {cached}"
 
                 match action, cached with
 
@@ -394,7 +389,7 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'T
                                 do! Task.Delay 0
                                 try
                                     log (Started, key)
-                                    let! result = computation cts.Token
+                                    let! result = Async.StartAsTask(computation, cancellationToken = cts.Token)
                                     post (key, (JobCompleted result))
                                 with
                                 | :? OperationCanceledException ->
@@ -408,12 +403,12 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'T
 
                     // Shouldn't happen, unless we allow evicting Running jobs from cache
 
-                | CancelRequest, Some (Running (tcs, _cts, _c)) ->
+                | CancelRequest, Some (Running (tcs, cts, _c)) ->
 
                     decrRequestCount key
                     if requestCounts[key] < 1 then
                         cancelRegistration key
-//                        cts.Cancel()
+                        cts.Cancel()
                         tcs.TrySetCanceled() |> ignore
                         cache.Remove (key.Key, key.Version)
                         requestCounts.Remove key |> ignore
@@ -464,15 +459,12 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'T
             })
         }
 
-    //let agent =
-    //    new TaskAgent<'TKey * MemoizeRequest<'TValue>, 'TKey * StateUpdate<'TValue>, MemoizeReply<'TValue>>(processRequest, processStateUpdate)
-
     let rec post msg =
         Task.Run(fun () -> processStateUpdate post msg :> Task) |> ignore
 
     member this.Get'(key, computation) =
 
-        let wrappedKey = 
+        let wrappedKey =
             { new ICacheKey<_, _> with
                 member _.GetKey() = key
                 member _.GetVersion() = Unchecked.defaultof<_>
@@ -483,13 +475,11 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'T
 
         let key = { Label = key.GetLabel(); Key = key.GetKey(); Version = key.GetVersion() }
 
-        cancellableTask {
-            let! ct = CancellableTask.getCancellationToken()
+        async {
+            let! ct = Async.CancellationToken
 
-            let! x = processRequest post (key, GetOrCompute(computation, ct))
-            match x with
+            match! processRequest post (key, GetOrCompute(computation, ct)) |> Async.AwaitTask with
             | New ->
-
                 try
                     log (Started, key)
                     let! result = computation
@@ -504,7 +494,7 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'T
                     post (key, (JobFailed ex))
                     return raise ex
 
-            | Existing job -> return! job
+            | Existing job -> return! job |> Async.AwaitTask
         }
 
     member val Event = event.Publish

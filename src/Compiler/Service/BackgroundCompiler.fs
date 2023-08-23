@@ -36,7 +36,6 @@ open FSharp.Compiler.Text
 open FSharp.Compiler.Text.Range
 open FSharp.Compiler.TcGlobals
 open FSharp.Compiler.BuildGraph
-open Microsoft.VisualStudio.FSharp.Editor.CancellableTasks
 
 type SourceTextHash = int64
 type CacheStamp = int64
@@ -139,7 +138,7 @@ type internal IBackgroundCompiler =
 
     abstract member ParseAndCheckFileInProject:
         fileName: string * projectSnapshot: FSharpProjectSnapshot * userOpName: string ->
-            CancellableTask<FSharpParseFileResults * FSharpCheckFileAnswer>
+            Async<FSharpParseFileResults * FSharpCheckFileAnswer>
 
     /// Parse and typecheck the whole project.
     abstract member ParseAndCheckProject: options: FSharpProjectOptions * userOpName: string -> NodeCode<FSharpCheckProjectResults>
@@ -1595,12 +1594,12 @@ type internal BackgroundCompiler
                 fileName: string,
                 projectSnapshot: FSharpProjectSnapshot,
                 userOpName: string
-            ) : CancellableTask<FSharpParseFileResults * FSharpCheckFileAnswer> =
-            cancellableTask {
+            ) : Async<FSharpParseFileResults * FSharpCheckFileAnswer> =
+            async {
                 let fileSnapshot = projectSnapshot.SourceFiles |> Seq.find (fun f -> f.FileName = fileName)
-                let! sourceText = fileSnapshot.GetSource()
+                let! sourceText = fileSnapshot.GetSource() |> Async.AwaitTask
                 let options = projectSnapshot.ToOptions()
-                return! self.ParseAndCheckFileInProject(fileName, 0, sourceText, options, userOpName) |> NodeCode.StartAsTask_ForTesting
+                return! self.ParseAndCheckFileInProject(fileName, 0, sourceText, options, userOpName) |> Async.AwaitNodeCode
             }
 
         member _.ParseAndCheckProject(options: FSharpProjectOptions, userOpName: string) : NodeCode<FSharpCheckProjectResults> =

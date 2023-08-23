@@ -93,9 +93,6 @@
 
     <Compile Include="Utilities\Activity.fsi" />
     <Compile Include="Utilities\Activity.fs" />
-	  <Compile Include="..\..\vsintegration\src\FSharp.Editor\Common\CancellableTasks.fs">
-		  <Link>Utilities\CancellableTasks.fs</Link>
-	  </Compile>
     <Compile Include="Utilities\sformat.fsi" />
     <Compile Include="Utilities\sformat.fs" />
     <Compile Include="Utilities\sr.fsi" />

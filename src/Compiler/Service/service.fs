@@ -450,10 +450,9 @@ type FSharpChecker
         backgroundCompiler.ParseAndCheckFileInProject(fileName, fileVersion, sourceText, options, userOpName)
         |> Async.AwaitNodeCode
 
-    member _.ParseAndCheckFileInProject(fileName: string, projectSnapshot: FSharpProjectSnapshot, ?userOpName: string, ?cancellationToken: CancellationToken) =
+    member _.ParseAndCheckFileInProject(fileName: string, projectSnapshot: FSharpProjectSnapshot, ?userOpName: string) =
         let userOpName = defaultArg userOpName "Unknown"
-        let ct = defaultArg cancellationToken CancellationToken.None
-        backgroundCompiler.ParseAndCheckFileInProject(fileName, projectSnapshot, userOpName) ct
+        backgroundCompiler.ParseAndCheckFileInProject(fileName, projectSnapshot, userOpName)
 
     member _.ParseAndCheckProject(options: FSharpProjectOptions, ?userOpName: string) =
         let userOpName = defaultArg userOpName "Unknown"

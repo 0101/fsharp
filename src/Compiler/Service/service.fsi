@@ -203,8 +203,8 @@ type public FSharpChecker =
             Async<FSharpParseFileResults * FSharpCheckFileAnswer>
 
     member ParseAndCheckFileInProject:
-        fileName: string * projectSnapshot: FSharpProjectSnapshot * ?userOpName: string * ?cancellationToken: CancellationToken ->
-            Task<FSharpParseFileResults * FSharpCheckFileAnswer>
+        fileName: string * projectSnapshot: FSharpProjectSnapshot * ?userOpName: string ->
+            Async<FSharpParseFileResults * FSharpCheckFileAnswer>
 
     /// <summary>
     /// <para>Parse and typecheck all files in a project.</para>

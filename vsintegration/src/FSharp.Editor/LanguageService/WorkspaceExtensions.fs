@@ -103,8 +103,7 @@ module private CheckerExtensions =
             cancellableTask {
                 let! projectSnapshot = getProjectSnapshot (document, options)
 
-                let! ct = CancellableTask.getCancellationToken ()
-                let! (parseResults, checkFileAnswer) = checker.ParseAndCheckFileInProject(document.FilePath, projectSnapshot, userOpName, ct)
+                let! (parseResults, checkFileAnswer) = checker.ParseAndCheckFileInProject(document.FilePath, projectSnapshot, userOpName)
 
                 return
                     match checkFileAnswer with

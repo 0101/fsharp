@@ -566,8 +566,7 @@ module ProjectOperations =
             let absFileName = getFilePath project file
             let options = project.GetProjectOptions checker
             let! projectSnapshot = FSharpProjectSnapshot.FromOptions(options, getFileSnapshot project)
-            let! ct = Async.CancellationToken
-            return! checker.ParseAndCheckFileInProject(absFileName, projectSnapshot, cancellationToken=ct) |> Async.AwaitTask
+            return! checker.ParseAndCheckFileInProject(absFileName, projectSnapshot)
         }
 
     let checkFile fileId (project: SyntheticProject) (checker: FSharpChecker) =
@@ -725,8 +724,7 @@ module Helpers =
                 |> Seq.tryPick id
                 |> Option.defaultValue (-1, "", -1)
 
-            let! ct = Async.CancellationToken
-            let! results = checker.ParseAndCheckFileInProject(fileName, snapshot, cancellationToken=ct) |> Async.AwaitTask
+            let! results = checker.ParseAndCheckFileInProject(fileName, snapshot)
 
             let typeCheckResults = getTypeCheckResult results
 
