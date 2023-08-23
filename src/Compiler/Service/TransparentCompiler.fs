@@ -876,7 +876,7 @@ type internal TransparentCompiler
             }
         )
 
-    let computeDependencyGraph parsedInputs (tcConfig: TcConfig) (processGraph: Graph<FileIndex> -> Graph<FileIndex>) =
+    let computeDependencyGraph parsedInputs (processGraph: Graph<FileIndex> -> Graph<FileIndex>) =
         cancellableTask {
             let sourceFiles: FileInProject array =
                 parsedInputs
@@ -895,7 +895,7 @@ type internal TransparentCompiler
 
             // TODO: we will probably want to cache and re-use larger graphs if available
             let graph =
-                DependencyResolution.mkGraph tcConfig.compilingFSharpCore filePairs sourceFiles
+                DependencyResolution.mkGraph filePairs sourceFiles
                 |> fst
                 |> processGraph
 
@@ -953,16 +953,16 @@ type internal TransparentCompiler
         |> Seq.map (fun x -> x.Key, x.Value |> Array.filter (fun node -> not (removeIndexes.Contains node)))
         |> Graph.make
 
-    let ComputeDependencyGraphForFile (priorSnapshot: FSharpProjectSnapshot) parsedInputs (tcConfig: TcConfig) =
+    let ComputeDependencyGraphForFile (priorSnapshot: FSharpProjectSnapshot) parsedInputs =
         let key = priorSnapshot.SourceFiles.Key(DependencyGraphType.File) 
         //let lastFileIndex = (parsedInputs |> Array.length) - 1
-        //caches.DependencyGraph.Get(key, computeDependencyGraph parsedInputs tcConfig (Graph.subGraphFor lastFileIndex))
-        caches.DependencyGraph.Get(key, computeDependencyGraph parsedInputs tcConfig (removeImplFilesThatHaveSignaturesExceptLastOne priorSnapshot))
+        //caches.DependencyGraph.Get(key, computeDependencyGraph parsedInputs (Graph.subGraphFor lastFileIndex))
+        caches.DependencyGraph.Get(key, computeDependencyGraph parsedInputs (removeImplFilesThatHaveSignaturesExceptLastOne priorSnapshot))
 
-    let ComputeDependencyGraphForProject (projectSnapshot: FSharpProjectSnapshot) parsedInputs (tcConfig: TcConfig) =
+    let ComputeDependencyGraphForProject (projectSnapshot: FSharpProjectSnapshot) parsedInputs =
         let key = projectSnapshot.SourceFiles.Key(DependencyGraphType.Project)
-        //caches.DependencyGraph.Get(key, computeDependencyGraph parsedInputs tcConfig (removeImplFilesThatHaveSignatures projectSnapshot))
-        caches.DependencyGraph.Get(key, computeDependencyGraph parsedInputs tcConfig id)
+        //caches.DependencyGraph.Get(key, computeDependencyGraph parsedInputs (removeImplFilesThatHaveSignatures projectSnapshot))
+        caches.DependencyGraph.Get(key, computeDependencyGraph parsedInputs id)
 
     let ComputeTcIntermediate
         (projectSnapshot: FSharpProjectSnapshot)
@@ -1193,8 +1193,8 @@ type internal TransparentCompiler
                 let! parsedInputs = files |> Seq.map (ComputeParseFile bootstrapInfo) |> Seq.map ((|>) ct) |> Task.WhenAll
 
                 let! graph, dependencyFiles =
-                    ComputeDependencyGraphForFile priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
-                    //ComputeDependencyGraphForProject priorSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
+                    ComputeDependencyGraphForFile priorSnapshot (parsedInputs |> Array.map p13)
+                    //ComputeDependencyGraphForProject priorSnapshot (parsedInputs |> Array.map p13)
 
                 let! results, tcInfo =
                     processTypeCheckingGraph
@@ -1351,7 +1351,7 @@ type internal TransparentCompiler
                     |> Task.WhenAll
 
                 let! graph, dependencyFiles =
-                    ComputeDependencyGraphForProject projectSnapshot (parsedInputs |> Array.map p13) bootstrapInfo.TcConfig
+                    ComputeDependencyGraphForProject projectSnapshot (parsedInputs |> Array.map p13)
 
                 return!
                     processTypeCheckingGraph
@@ -1751,7 +1751,7 @@ type internal TransparentCompiler
 
                 match! this.ParseAndCheckFileInProject(fileName, snapshot, userOpName) ct |> NodeCode.AwaitTask with
                 | parseResult, FSharpCheckFileAnswer.Succeeded checkResult -> return parseResult, checkResult
-                | parseResult, FSharpCheckFileAnswer.Aborted _ -> return parseResult, FSharpCheckFileResults.MakeEmpty(fileName, [||], true)
+                | parseResult, FSharpCheckFileAnswer.Aborted -> return parseResult, FSharpCheckFileResults.MakeEmpty(fileName, [||], true)
             }
 
         member this.GetBackgroundParseResultsForFileInProject
@@ -1784,7 +1784,7 @@ type internal TransparentCompiler
 
                 match! this.ParseAndCheckFileInProject(fileName, snapshot, "GetCachedCheckFileResult") ct |> NodeCode.AwaitTask with
                 | parseResult, FSharpCheckFileAnswer.Succeeded checkResult -> return Some(parseResult, checkResult)
-                | _, FSharpCheckFileAnswer.Aborted _ -> return None
+                | _, FSharpCheckFileAnswer.Aborted -> return None
             }
 
         member this.GetProjectOptionsFromScript
