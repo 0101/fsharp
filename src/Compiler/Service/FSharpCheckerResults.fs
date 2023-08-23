@@ -1140,6 +1140,7 @@ type internal TypeCheckInfo
                 | minfo :: _ -> CompletionItemKind.Method minfo.IsExtensionMember
             | Item.AnonRecdField _
             | Item.RecdField _
+            | Item.UnionCaseField _
             | Item.Property _ -> CompletionItemKind.Property
             | Item.Event _ -> CompletionItemKind.Event
             | Item.ILField _
@@ -1154,7 +1155,6 @@ type internal TypeCheckInfo
             | Item.TypeVar _
             | Item.Types _
             | Item.UnionCase _
-            | Item.UnionCaseField _
             | Item.UnqualifiedType _
             | Item.NewDef _
             | Item.SetterArg _
@@ -1261,6 +1261,66 @@ type internal TypeCheckInfo
             |> List.prependIfSome (SuggestNameBasedOnType g caseIdPos ty)
             |> List.prependIfSome (CreateCompletionItemForSuggestedPatternName caseIdPos fieldName))
         |> Option.defaultValue completions
+
+    /// Gets all methods that a type can override, but has not yet done so.
+    let GetOverridableMethods pos typeNameRange =
+        let isMethodOverridable alreadyOverridden (candidate: MethInfo) =
+            not candidate.IsFinal
+            && not (
+                alreadyOverridden
+                |> List.exists (MethInfosEquivByNameAndSig EraseNone true g amap range0 candidate)
+            )
+
+        let (nenv, ad), m = GetBestEnvForPos pos
+
+        sResolutions.CapturedNameResolutions
+        |> ResizeArray.tryPick (fun r ->
+            match r.Item with
+            | Item.Types (_, ty :: _) when equals r.Range typeNameRange && isAppTy g ty ->
+                let superTy =
+                    (tcrefOfAppTy g ty).TypeContents.tcaug_super |> Option.defaultValue g.obj_ty
+
+                let overriddenMethods =
+                    GetImmediateIntrinsicMethInfosOfType (None, ad) g amap typeNameRange ty
+                    |> List.filter (fun x -> x.IsDefiniteFSharpOverride)
+
+                let overridableMethods =
+                    GetIntrinsicMethInfosOfType
+                        infoReader
+                        None
+                        ad
+                        TypeHierarchy.AllowMultiIntfInstantiations.No
+                        FindMemberFlag.PreferOverrides
+                        range0
+                        superTy
+                    |> List.filter (isMethodOverridable overriddenMethods)
+                    |> List.groupBy (fun x -> x.DisplayName)
+                    |> List.map (fun (name, overloads) ->
+                        Item.MethodGroup(name, overloads, None)
+                        |> ItemWithNoInst
+                        |> CompletionItem ValueNone ValueNone)
+
+                Some(overridableMethods, nenv.DisplayEnv, m)
+            | _ -> None)
+
+    /// Gets all field identifiers of a union case that can be referred to in a pattern.
+    let GetUnionCaseFields caseIdRange alreadyReferencedFields =
+        sResolutions.CapturedNameResolutions
+        |> ResizeArray.tryPick (fun r ->
+            match r.Item with
+            | Item.UnionCase (uci, _) when equals r.Range caseIdRange ->
+                uci.UnionCase.RecdFields
+                |> List.indexed
+                |> List.choose (fun (index, field) ->
+                    if List.contains field.LogicalName alreadyReferencedFields then
+                        None
+                    else
+                        Item.UnionCaseField(uci, index)
+                        |> ItemWithNoInst
+                        |> CompletionItem ValueNone ValueNone
+                        |> Some)
+                |> Some
+            | _ -> None)
 
     let getItem (x: ItemWithInst) = x.Item
 
@@ -1762,6 +1822,12 @@ type internal TypeCheckInfo
                     denv,
                     m)
 
+            | Some (CompletionContext.Pattern (PatternContext.UnionCaseFieldIdentifier (referencedFields, caseIdRange))) ->
+                GetUnionCaseFields caseIdRange referencedFields
+                |> Option.map (fun completions ->
+                    let (nenv, _ad), m = GetBestEnvForPos pos
+                    completions, nenv.DisplayEnv, m)
+
             | Some (CompletionContext.Pattern patternContext) ->
                 let declaredItems =
                     GetDeclaredItems(
@@ -1786,6 +1852,7 @@ type internal TypeCheckInfo
                                 | Item.Value v -> v.LiteralValue.IsSome
                                 | Item.ILField field -> field.LiteralValue.IsSome
                                 | Item.ActivePatternCase _
+                                | Item.ExnCase _
                                 | Item.ModuleOrNamespaces _
                                 | Item.NewDef _
                                 | Item.Types _
@@ -1796,22 +1863,42 @@ type internal TypeCheckInfo
 
                 let indexOrName, caseIdRange =
                     match patternContext with
-                    | PatternContext.PositionalUnionCaseField (index, m) -> Choice1Of2 index, m
+                    | PatternContext.PositionalUnionCaseField (index, _, m) -> Choice1Of2 index, m
                     | PatternContext.NamedUnionCaseField (name, m) -> Choice2Of2 name, m
+                    | PatternContext.UnionCaseFieldIdentifier _
                     | PatternContext.Other -> Choice1Of2 None, range0
 
-                // No special handling for PatternContext.Other other than filtering out non-literal values
+                // No special handling other than filtering out items that may not appear in a pattern
                 if equals caseIdRange range0 then
                     declaredItems
                 else
-                    GetCapturedNameResolutions caseIdRange.End ResolveOverloads.Yes
+                    // When the user types `fun (Case (x| )) ->`, we do not yet know whether the intention is to use positional or named arguments,
+                    // so let's show options for both.
+                    let fields patternContext (uci: UnionCaseInfo) =
+                        match patternContext with
+                        | PatternContext.PositionalUnionCaseField (Some 0, true, _) ->
+                            uci.UnionCase.RecdFields
+                            |> List.mapi (fun index _ ->
+                                Item.UnionCaseField(uci, index)
+                                |> ItemWithNoInst
+                                |> CompletionItem ValueNone ValueNone)
+                        | _ -> []
+
+                    sResolutions.CapturedNameResolutions
                     |> ResizeArray.tryPick (fun r ->
                         match r.Item with
-                        | Item.UnionCase (uci, _) ->
-                            let list = declaredItems |> Option.map p13 |> Option.defaultValue []
+                        | Item.UnionCase (uci, _) when equals r.Range caseIdRange ->
+                            let list =
+                                declaredItems
+                                |> Option.map p13
+                                |> Option.defaultValue []
+                                |> List.append (fields patternContext uci)
+
                             Some(SuggestNameForUnionCaseFieldPattern g caseIdRange.End pos uci indexOrName list, r.DisplayEnv, r.Range)
                         | _ -> None)
                     |> Option.orElse declaredItems
+
+            | Some (CompletionContext.MethodOverride enclosingTypeNameRange) -> GetOverridableMethods pos enclosingTypeNameRange
 
             // Other completions
             | cc ->
@@ -1918,7 +2005,10 @@ type internal TypeCheckInfo
                         |> Option.map (fun parsedInput ->
                             ParsedInput.GetFullNameOfSmallestModuleOrNamespaceAtPoint(mkPos line 0, parsedInput))
 
-                    let isAttributeApplication = ctx = Some CompletionContext.AttributeApplication
+                    let isAttributeApplication =
+                        match ctx with
+                        | Some CompletionContext.AttributeApplication -> true
+                        | _ -> false
 
                     DeclarationListInfo.Create(
                         infoReader,

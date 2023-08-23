@@ -13,6 +13,7 @@ open Microsoft.CodeAnalysis.ExternalAccess.FSharp.Editor.FindUsages
 
 open FSharp.Compiler.EditorServices
 open FSharp.Compiler.Text
+open Microsoft.CodeAnalysis.Text
 open CancellableTasks
 
 module FSharpFindUsagesService =
@@ -28,7 +29,7 @@ module FSharpFindUsagesService =
         (symbolUse: range)
         =
         cancellableTask {
-            let! cancellationToken = CancellableTask.getCurrentCancellationToken ()
+            let! cancellationToken = CancellableTask.getCancellationToken ()
             let! sourceText = doc.GetTextAsync(cancellationToken)
 
             match declarationRange, RoslynHelpers.TryFSharpRangeToTextSpan(sourceText, symbolUse) with
@@ -61,7 +62,7 @@ module FSharpFindUsagesService =
         else
             cancellableTask {
                 let documentIds = solution.GetDocumentIdsWithFilePath(range.FileName)
-                let! cancellationToken = CancellableTask.getCurrentCancellationToken ()
+                let! cancellationToken = CancellableTask.getCancellationToken ()
 
                 let tasks =
                     [|
@@ -69,7 +70,7 @@ module FSharpFindUsagesService =
                             let t =
                                 cancellableTask {
                                     let doc = solution.GetDocument(documentId)
-                                    let! cancellationToken = CancellableTask.getCurrentCancellationToken ()
+                                    let! cancellationToken = CancellableTask.getCancellationToken ()
                                     let! sourceText = doc.GetTextAsync(cancellationToken)
 
                                     match RoslynHelpers.TryFSharpRangeToTextSpan(sourceText, range) with
@@ -96,7 +97,7 @@ module FSharpFindUsagesService =
             userOp: string
         ) : CancellableTask<unit> =
         cancellableTask {
-            let! cancellationToken = CancellableTask.getCurrentCancellationToken ()
+            let! cancellationToken = CancellableTask.getCancellationToken ()
             let! sourceText = document.GetTextAsync(cancellationToken)
             let textLine = sourceText.Lines.GetLineFromPosition(position).ToString()
             let lineNumber = sourceText.Lines.GetLinePosition(position).Line + 1
@@ -132,7 +133,11 @@ module FSharpFindUsagesService =
                         | Some range -> cancellableTask { return! rangeToDocumentSpans (document.Project.Solution, range) }
                         | None -> CancellableTask.singleton [||]
 
-                    let isExternal = declarationSpans |> Array.isEmpty
+                    let declarationSpans =
+                        declarationSpans
+                        |> List.distinctBy (fun x -> x.Document.FilePath, x.Document.Project.FilePath)
+
+                    let isExternal = declarationSpans |> List.isEmpty
 
                     let displayParts =
                         ImmutableArray.Create(Microsoft.CodeAnalysis.TaggedText(TextTags.Text, symbol.Ident.idText))
@@ -145,7 +150,7 @@ module FSharpFindUsagesService =
 
                     let definitionItems =
                         declarationSpans
-                        |> Array.map (fun span -> FSharpDefinitionItem.Create(tags, displayParts, span), span.Document.Project.Id)
+                        |> List.map (fun span -> FSharpDefinitionItem.Create(tags, displayParts, span), span.Document.Project.FilePath)
 
                     let tasks =
                         [|
@@ -158,16 +163,19 @@ module FSharpFindUsagesService =
                     if isExternal then
                         do! context.OnDefinitionFoundAsync(externalDefinitionItem)
 
-                    let onFound =
-                        onSymbolFound
-                            allReferences
-                            declarationRange
-                            externalDefinitionItem
-                            definitionItems
-                            isExternal
-                            context.OnReferenceFoundAsync
-
-                    do! SymbolHelpers.findSymbolUses symbolUse document checkFileResults onFound
+                    match declarationRange, RoslynHelpers.TryFSharpRangeToTextSpan(sourceText, symbolUse) with
+                    | Some declRange, _ when Range.equals declRange symbolUse -> ()
+                    | _, None -> ()
+                    | _, Some textSpan ->
+                        if allReferences then
+                            let definitionItem =
+                                if isExternal then
+                                    externalDefinitionItem
+                                else
+                                    definitionItems
+                                    |> List.tryFindV (fun (_, filePath) -> doc.Project.FilePath = filePath)
+                                    |> ValueOption.map (fun (definitionItem, _) -> definitionItem)
+                                    |> ValueOption.defaultValue externalDefinitionItem
 
         }
 
