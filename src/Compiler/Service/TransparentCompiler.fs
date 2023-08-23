@@ -871,7 +871,7 @@ type internal TransparentCompiler
             }
         )
 
-    let computeDependencyGraph parsedInputs (tcConfig: TcConfig) (processGraph: Graph<FileIndex> -> Graph<FileIndex>) =
+    let computeDependencyGraph parsedInputs (processGraph: Graph<FileIndex> -> Graph<FileIndex>) =
         async {
             let sourceFiles: FileInProject array =
                 parsedInputs

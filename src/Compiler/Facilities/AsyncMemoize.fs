@@ -265,6 +265,8 @@ type AsyncLock() =
 
     let semaphore = new SemaphoreSlim(1, 1)
 
+    member _.Semaphore = semaphore
+
     member _.Do(f) =
         task {
             do! semaphore.WaitAsync()
@@ -496,6 +498,8 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'T
 
             | Existing job -> return! job |> Async.AwaitTask
         }
+
+    member _.Lock = lock
 
     member val Event = event.Publish
 
