@@ -10,6 +10,7 @@ open System.Collections.Concurrent
 
 open Internal.Utilities.TaskAgent
 open System.IO
+open System.Diagnostics
 
 
 [<AutoOpen>]
@@ -61,6 +62,7 @@ type internal ValueLink<'T when 'T: not struct> =
     | Strong of 'T
     | Weak of WeakReference<'T>
 
+[<DebuggerDisplay("{DebuggerDisplay}")>]
 type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVersion: equality and 'TValue: not struct>(keepStrongly, ?keepWeakly, ?requiredToKeep, ?event) =
 
     let keepWeakly = defaultArg keepWeakly 100
@@ -133,6 +135,8 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
         let node = strongList.AddFirst(value=(key, version, label, Strong value))
         cutStrongListIfTooLong()
         node
+
+    member _.DebuggerDisplay = $"Cache(S:{strongList.Count} W:{weakList.Count})"
 
     member _.Set(key, version, label, value) =
         match dictionary.TryGetValue key with
@@ -228,6 +232,15 @@ type internal LruCache<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVers
     member this.Remove(key) =
         this.Remove(key, Unchecked.defaultof<_>)
 
+    member _.GetValues() = 
+        strongList 
+        |> Seq.append weakList
+        |> Seq.choose (function 
+            | _, _, _, Strong v -> Some v 
+            | _, _, _, Weak w -> 
+                match w.TryGetTarget() with 
+                | true, v -> Some v
+                | _ -> None)
 
 type internal ICacheKey<'TKey, 'TVersion> =
     abstract member GetKey: unit -> 'TKey
@@ -279,7 +292,7 @@ type AsyncLock() =
     interface IDisposable with
         member _.Dispose() = semaphore.Dispose()
 
-
+[<DebuggerDisplay("{DebuggerDisplay}")>]
 type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'TVersion: equality>(?keepStrongly, ?keepWeakly, ?name: string) =
 
     let name = defaultArg name "N/A"
@@ -288,8 +301,8 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'T
 
     let cache =
         LruCache<'TKey, 'TVersion, Job<'TValue>>(
-            keepStrongly = defaultArg keepStrongly 5,
-            keepWeakly = defaultArg keepWeakly 5,
+            keepStrongly = defaultArg keepStrongly 100,
+            keepWeakly = defaultArg keepWeakly 100,
             requiredToKeep = (function Running _ -> true | _ -> false),
             event = (function
                 | CacheEvent.Evicted -> (fun k -> event.Trigger (JobEvent.Evicted, k))
@@ -477,16 +490,28 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'T
 
         let key = { Label = key.GetLabel(); Key = key.GetKey(); Version = key.GetVersion() }
 
+        let timeout = TimeSpan.FromMinutes 2
+
+        let cts = new CancellationTokenSource(timeout)
+
+        //cts.Token.Register(fun _ -> 
+        //    System.Diagnostics.Trace.TraceError $"{name} [{key.Label}] Timed out after {timeout}ms"
+        //    //raise (Exception "Wonder if this will be visible somewhere")
+        //    ) |> ignore
+
         async {
             let! ct = Async.CancellationToken
 
-            match! processRequest post (key, GetOrCompute(computation, ct)) |> Async.AwaitTask with
+            let x = CancellationTokenSource.CreateLinkedTokenSource(ct, cts.Token)
+            match! processRequest post (key, GetOrCompute(computation, x.Token)) |> Async.AwaitTask with
             | New ->
-                try
-                    log (Started, key)
-                    let! result = computation
-                    post (key, (JobCompleted result))
-                    return result
+                try 
+                    return! Async.StartAsTask(async {
+                        log (Started, key)
+                        let! result = computation 
+                        post (key, (JobCompleted result))
+                        return result
+                    }, cancellationToken = x.Token) |> Async.AwaitTask
                 with
                 | :? TaskCanceledException
                 | :? OperationCanceledException as ex ->
@@ -499,12 +524,20 @@ type internal AsyncMemoize<'TKey, 'TVersion, 'TValue when 'TKey: equality and 'T
             | Existing job -> return! job |> Async.AwaitTask
         }
 
-    member _.Lock = lock
-
     member val Event = event.Publish
 
     member this.OnEvent = this.Event.Add
 
+    member _.Locked = lock.Semaphore.CurrentCount < 1
+
+    member this.DebuggerDisplay =         
+        let locked = if this.Locked then " [LOCKED]" else ""
+        let valueStats = 
+            cache.GetValues()
+            |> Seq.countBy (function Running _ -> "Running" | Completed _ -> "Completed")
+            |> Seq.map ((<||) (sprintf "%s: %d"))
+            |> String.concat " "
+        $"{name}{locked} {valueStats} ({cache.DebuggerDisplay})"
 
     //member this.Get(key, computation) =
     //    this.Get(key, Unchecked.defaultof<_>, computation)
