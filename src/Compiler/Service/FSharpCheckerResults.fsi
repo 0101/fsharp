@@ -71,6 +71,10 @@ type FSharpFileSnapshot =
     interface ICacheKey<string, string>
 
 
+/// Referenced assembly on disk. Includes last modified time so we know we need to rebuild when it changes.
+type ReferenceOnDisk = { Path: string; LastModified: DateTime }
+
+
 [<NoComparison>]
 type FSharpProjectSnapshot =
     {
@@ -80,10 +84,13 @@ type FSharpProjectSnapshot =
         /// This is the unique identifier for the project, it is case sensitive. If it's None, will key off of ProjectFileName in our caching.
         ProjectId: string option
 
-        /// The files in the project
+        /// The files in the project.
         SourceFiles: FSharpFileSnapshot list
 
-        /// Additional command line argument options for the project. These can include additional files and references.
+        /// Referenced assemblies on disk.
+        ReferencesOnDisk: ReferenceOnDisk list
+
+        /// Additional command line argument options for the project.
         OtherOptions: string list
 
         /// The command line arguments for the other projects referenced by this project, indexed by the
@@ -125,6 +132,8 @@ type FSharpProjectSnapshot =
     member internal ProjectDirectory: string
 
     member SourceFileNames: string list
+
+    member CommandLineOptions: string list
 
     member IndexOf: fileName: string -> FileIndex
 

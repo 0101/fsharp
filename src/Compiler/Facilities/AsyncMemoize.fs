@@ -250,6 +250,7 @@ type internal ICacheKey<'TKey, 'TVersion> =
 type private KeyData<'TKey, 'TVersion> =
     { Label: string; Key: 'TKey; Version: 'TVersion }
 
+/// Tools for hashing things with MD5 into a string that can be used as a cache key.
 module internal Md5Hasher =
 
     let private md5 = new ThreadLocal<_>(fun () -> System.Security.Cryptography.MD5.Create())
@@ -265,14 +266,19 @@ module internal Md5Hasher =
     let addString (s: string) (s2: string) =
         s |> System.Text.Encoding.UTF8.GetBytes |> addBytes <| s2
 
-    let addStrings (strings: string seq) (s: string) =
-        strings |> Seq.fold addString s 
+    let addSeq<'item> (items: 'item seq) (addItem: 'item -> string -> string) (s: string) =
+        items |> Seq.fold (fun s a -> addItem a s) s
+
+    let addStrings strings = addSeq strings addString
 
     let addVersions<'a, 'b when 'a :> ICacheKey<'b, string>> (versions: 'a seq) (s: string) =
         versions |> Seq.map (fun x -> x.GetVersion()) |> addStrings <| s
 
     let addBool (b: bool) (s: string) =
         b |> BitConverter.GetBytes |> addBytes <| s
+
+    let addDateTime (dt: System.DateTime) (s: string) =
+        dt.Ticks.ToString() |> addString <| s
 
 type AsyncLock() =
 

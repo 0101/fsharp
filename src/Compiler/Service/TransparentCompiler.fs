@@ -517,7 +517,7 @@ type internal TransparentCompiler
                         [| Activity.Tags.project, projectSnapshot.ProjectFileName |> Path.GetFileName |]
 
                 let useSimpleResolutionSwitch = "--simpleresolution"
-                let commandLineArgs = projectSnapshot.OtherOptions
+                let commandLineArgs = projectSnapshot.CommandLineOptions
                 let defaultFSharpBinariesDir = FSharpCheckerResultsSettings.defaultFSharpBinariesDir
                 let useScriptResolutionRules = projectSnapshot.UseScriptResolutionRules
 
@@ -655,25 +655,6 @@ type internal TransparentCompiler
                     CompilationDiagnosticLogger("nonFrameworkAssemblyInputs", tcConfig.diagnosticsOptions)
 
                 use _ = new CompilationGlobalsScope(diagnosticsLogger, BuildPhase.Parameter)
-
-                // TODO: might need to put something like this somewhere, probably FSharpProjectSnapshot?
-                //// Get the names and time stamps of all the non-framework referenced assemblies, which will act
-                //// as inputs to one of the nodes in the build.
-                ////
-                //// This operation is done when constructing the builder itself, rather than as an incremental task.
-                //let nonFrameworkAssemblyInputs =
-                //    // Note we are not calling diagnosticsLogger.GetDiagnostics() anywhere for this task.
-                //    // This is ok because not much can actually go wrong here.
-                //    let diagnosticsLogger = CompilationDiagnosticLogger("nonFrameworkAssemblyInputs", tcConfig.diagnosticsOptions)
-                //    // Return the disposable object that cleans up
-                //    use _holder = new CompilationGlobalsScope(diagnosticsLogger, BuildPhase.Parameter)
-
-                //    [ for r in nonFrameworkResolutions do
-                //        let fileName = r.resolvedPath
-                //        yield (Choice1Of2 fileName, (fun (cache: TimeStampCache) -> cache.GetFileTimeStamp fileName))
-
-                //      for pr in projectReferences  do
-                //        yield Choice2Of2 pr, (fun (cache: TimeStampCache) -> cache.GetProjectReferenceTimeStamp pr) ]
 
                 let tcConfigP = TcConfigProvider.Constant tcConfig
 

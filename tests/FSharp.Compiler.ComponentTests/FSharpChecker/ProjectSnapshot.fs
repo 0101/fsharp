@@ -18,6 +18,7 @@ let WithoutImplFilesThatHaveSignatures () =
             { FileName = "C.fsi"; Version = "1"; GetSource = Unchecked.defaultof<_> }
             { FileName = "C.fs"; Version = "1"; GetSource = Unchecked.defaultof<_> }
         ]
+        ReferencesOnDisk = Unchecked.defaultof<_>
         OtherOptions = Unchecked.defaultof<_>
         ReferencedProjects = Unchecked.defaultof<_>
         IsIncompleteTypeCheckEnvironment = Unchecked.defaultof<_>
@@ -47,6 +48,7 @@ let WithoutImplFilesThatHaveSignaturesExceptLastOne () =
             { FileName = "C.fsi"; Version = "1"; GetSource = Unchecked.defaultof<_> }
             { FileName = "C.fs"; Version = "1"; GetSource = Unchecked.defaultof<_> }
         ]
+        ReferencesOnDisk = Unchecked.defaultof<_>
         OtherOptions = Unchecked.defaultof<_>
         ReferencedProjects = Unchecked.defaultof<_>
         IsIncompleteTypeCheckEnvironment = Unchecked.defaultof<_>
