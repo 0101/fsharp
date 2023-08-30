@@ -35,6 +35,9 @@ open FSharp.Compiler.Text
 open FSharp.Compiler.Text.Range
 open FSharp.Compiler.TcGlobals
 open FSharp.Compiler.BuildGraph
+open FSharp.Compiler.Infos
+open FSharp.Compiler.Syntax.PrettyNaming
+open FSharp.Compiler.TypedTreeOps
 
 [<AutoOpen>]
 module EnvMisc =
@@ -1613,8 +1616,17 @@ type FSharpChecker
             else
                 let! parseResults = backgroundCompiler.GetBackgroundParseResultsForFileInProject(fileName, options, userOpName)
 
+                let name =
+                    match symbol.Item with
+                    | NameResolution.Item.CtorGroup(nm, ILMeth(_, ilMethInfo, _) :: _) ->
+                        match ilMethInfo.ApparentEnclosingType |> tryNiceEntityRefOfTy with
+                        | ValueSome tcref -> tcref.DisplayNameCore
+                        | _ -> nm
+                        |> DemangleGenericTypeName
+                    | _ -> symbol.DisplayNameCore
+
                 if
-                    parseResults.ParseTree.Identifiers |> Set.contains symbol.DisplayNameCore
+                    parseResults.ParseTree.Identifiers |> Set.contains name
                     || parseResults.ParseTree.Identifiers |> NamesContainAttribute symbol
                 then
                     return! backgroundCompiler.FindReferencesInFile(fileName, options, symbol, canInvalidateProject, userOpName)
