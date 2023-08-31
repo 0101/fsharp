@@ -3,6 +3,7 @@
 open System.Threading
 open FSharp.Compiler.GraphChecking
 open System.Threading.Tasks
+open System
 
 /// Information about the node in a graph, describing its relation with other nodes.
 type NodeInfo<'Item> =
@@ -229,26 +230,13 @@ let processGraphAsync<'Item, 'Result when 'Item: equality and 'Item: comparison>
 
         let processedCount = IncrementableInt(0)
 
-        ///// Create a setter and getter for an exception raised in one of the work items.
-        ///// Only the first exception encountered is stored - this can cause non-deterministic errors if more than one item fails.
-        //let raiseExn, getExn =
-        //    let mutable exn: ('Item * System.Exception) option = None
-        //    let lockObj = obj ()
-        //    // Only set the exception if it hasn't been set already
-        //    let setExn newExn =
-        //        lock lockObj (fun () ->
-        //            match exn with
-        //            | Some _ -> ()
-        //            | None -> exn <- newExn
-
-        //            localCts.Cancel())
-
-        //    let getExn () = exn
-        //    setExn, getExn
-
-        let raiseExn (item, ex) =
+        let raiseExn (item, ex: exn) =
             localCts.Cancel()
-            completionSignal.TrySetException(GraphProcessingException($"[*] Encountered exception when processing item '{item}'", ex))
+            match ex with 
+            | :? OperationCanceledException ->
+                completionSignal.TrySetCanceled()
+            | _ -> 
+                completionSignal.TrySetException(GraphProcessingException($"[*] Encountered exception when processing item '{item}': {ex.Message}", ex))
             |> ignore
 
         let incrementProcessedNodesCount () =
@@ -292,7 +280,6 @@ let processGraphAsync<'Item, 'Result when 'Item: equality and 'Item: comparison>
         leaves |> Array.iter queueNode
 
         // Wait for end of processing, an exception, or an external cancellation request.
-
         do! completionSignal.Task |> Async.AwaitTask 
         
         // All calculations succeeded - extract the results and sort in input order.

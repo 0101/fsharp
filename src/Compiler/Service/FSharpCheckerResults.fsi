@@ -44,22 +44,6 @@ type DelayedILModuleReader =
 /// <summary>Unused in this API</summary>
 type public FSharpUnresolvedReferencesSet = internal FSharpUnresolvedReferencesSet of UnresolvedAssemblyReference list
 
-//type internal FSharpFileKey = string * string
-
-//type internal FSharpProjectSnapshotKey =
-//    { ProjectFileName: string
-//      SourceFiles: FSharpFileKey list
-//      OtherOptions: string list
-//      ReferencedProjects: FSharpProjectSnapshotKey list
-
-//      // Do we need these?
-//      IsIncompleteTypeCheckEnvironment: bool
-//      UseScriptResolutionRules: bool }
-
-//    member LastFile: FSharpFileKey
-
-//    interface ICacheKey<string>
-
 [<NoComparison; CustomEquality>]
 type FSharpFileSnapshot =
     { FileName: string

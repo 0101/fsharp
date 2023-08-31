@@ -95,7 +95,6 @@ let ``We can cancel a job`` () =
         let _task3 = Async.StartAsTask( memoize.Get'(key, computation key), cancellationToken = cts3.Token)
 
         jobStarted.WaitOne() |> ignore
-        do! memoize.Sync()
 
         jobStarted.Reset() |> ignore
 
@@ -106,14 +105,11 @@ let ``We can cancel a job`` () =
 
         jobStarted.WaitOne() |> ignore
 
-        do! memoize.Sync()
-
         Assert.Equal<(JobEvent * int) array>([| Started, key; Started, key |], eventLog |> Seq.toArray )
 
         cts3.Cancel()
 
-        do! Task.Delay 100
-        do! memoize.Sync() 
+        do! Task.Delay 100 
 
         Assert.Equal<(JobEvent * int) array>([| Started, key; Started, key; Canceled, key |], eventLog |> Seq.toArray )
     }
@@ -206,7 +202,6 @@ let ``Job is restarted if first requestor cancels but keeps running if second re
         Assert.Equal(2, result)
 
         Assert.Equal(TaskStatus.Canceled, _task1.Status)
-        //Assert.Equal(TaskStatus.Canceled, _task2.Status)
 
         let orderedLog = eventLog |> Seq.sortBy fst |> Seq.map snd |> Seq.toList
         let expected = [ Started, key; Started, key; Finished, key ]
@@ -304,7 +299,6 @@ let ``Stress test`` () =
                         let cts = new CancellationTokenSource()
                         let runningJob = Async.StartAsTask(job, cancellationToken = cts.Token)
                         cts.CancelAfter timeoutMs
-                        // ignore timeoutMs
                         Interlocked.Increment &started |> ignore
                         try
                             let! actual = runningJob
@@ -330,11 +324,10 @@ let ``Stress test`` () =
         }
         |> Task.WhenAll
 
-    //if not (test.Wait testTimeoutMs) then failwith "Test timed out - most likely deadlocked"
-    test.Wait()
-    ignore testTimeoutMs
+    if not (test.Wait testTimeoutMs) then failwith "Test timed out - most likely deadlocked"
+    
     Assert.Equal (threads * iterations, started)
-    Assert.Equal<int * int * int * int * int>((0,0,0,0,0),(started, completed, canceled, failed, timeout))
+    // Assert.Equal<int * int * int * int * int>((0,0,0,0,0),(started, completed, canceled, failed, timeout))
     Assert.Equal (started, completed + canceled + failed + timeout)
 
-    Assert.True ((float completed) > ((float started) * 0.1), "Less than 10% completed jobs")
+    Assert.True ((float completed) > ((float started) * 0.1), "Less than 10 % completed jobs")

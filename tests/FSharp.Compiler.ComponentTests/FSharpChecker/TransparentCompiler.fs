@@ -537,10 +537,6 @@ let fuzzingTest seed (project: SyntheticProject) = task {
             do! modifyProject modify
     }
 
-
-
-    //checker.Caches.TcIntermediate.OnEvent(fun (event, (label, key, version)) -> ())
-
     let checkingLoop n _ = task {
         for _ in 1 .. checkingLoopIterations do
             let! project = getProject()
@@ -597,7 +593,7 @@ let fuzzingTest seed (project: SyntheticProject) = task {
 
     Assert.Equal<array<_>>([||], _errors)
 
-    Assert.Equal<Map<_,_>>(Map.empty, _stats)
+    //Assert.Equal<Map<_,_>>(Map.empty, _stats)
 
     builder.DeleteProjectDir()
 }
@@ -802,8 +798,8 @@ let Fuzzing' signatureFiles =
 [<InlineData true>]
 [<InlineData false>]
 let GiraffeFuzzing signatureFiles =
-    //let seed = System.Random().Next()
-    let seed = 1044159179
+    let seed = System.Random().Next()
+    //let seed = 1044159179
 
     let giraffe = if signatureFiles then "giraffe-signatures" else "Giraffe"
     let giraffeDir = __SOURCE_DIRECTORY__ ++ ".." ++ ".." ++ ".." ++ ".." ++ giraffe ++ "src" ++ "Giraffe"

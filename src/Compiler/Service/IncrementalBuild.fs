@@ -485,7 +485,6 @@ type BoundModel private (
             syntaxTreeOpt
         )
 
-
 /// Global service state
 type FrameworkImportsCacheKey = 
     | FrameworkImportsCacheKey of resolvedpath: string list * assemblyName: string * targetFrameworkDirectories: string list * fsharpBinaries: string * langVersion: decimal
@@ -498,15 +497,7 @@ type FrameworkImportsCacheKey =
             this |> function FrameworkImportsCacheKey(assemblyName=a) -> a
 
         member this.GetVersion() = this
-            //match this with FrameworkImportsCacheKey(resolvedpath, assemblyName, targetFrameworkDirectories,  fsharpBinaries, langVersion) ->
-            //    Md5Hasher.empty
-            //    |> Md5Hasher.addStrings resolvedpath
-            //    |> Md5Hasher.addString assemblyName
-            //    |> Md5Hasher.addStrings targetFrameworkDirectories
-            //    |> Md5Hasher.addString fsharpBinaries
-            //    |> Md5Hasher.addString (langVersion.ToString())
         
-
 /// Represents a cache of 'framework' references that can be shared between multiple incremental builds
 type FrameworkImportsCache(size) =
 

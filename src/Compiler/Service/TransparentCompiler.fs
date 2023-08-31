@@ -852,7 +852,19 @@ type internal TransparentCompiler
             }
         )
 
-    let computeDependencyGraph parsedInputs (processGraph: Graph<FileIndex> -> Graph<FileIndex>) =
+    // In case we don't want to use any parallel processing
+    let mkLinearGraph count : Graph<FileIndex> =
+        seq {        
+            0, [| |]
+            yield!
+                [0..count-1]
+                |> Seq.rev
+                |> Seq.pairwise
+                |> Seq.map (fun (a, b) -> a, [| b |])
+        } 
+        |> Graph.make
+
+    let computeDependencyGraph (tcConfig: TcConfig) parsedInputs (processGraph: Graph<FileIndex> -> Graph<FileIndex>) =
         async {
             let sourceFiles: FileInProject array =
                 parsedInputs
@@ -870,10 +882,14 @@ type internal TransparentCompiler
             let filePairs = FilePairMap(sourceFiles)
 
             // TODO: we will probably want to cache and re-use larger graphs if available
+
             let graph =
-                DependencyResolution.mkGraph filePairs sourceFiles
-                |> fst
-                |> processGraph
+                if tcConfig.compilingFSharpCore then 
+                    mkLinearGraph sourceFiles.Length
+                else
+                    DependencyResolution.mkGraph filePairs sourceFiles
+                    |> fst
+                    |> processGraph
 
             let nodeGraph = TransformDependencyGraph(graph, filePairs)
 
@@ -929,36 +945,27 @@ type internal TransparentCompiler
         |> Seq.map (fun x -> x.Key, x.Value |> Array.filter (fun node -> not (removeIndexes.Contains node)))
         |> Graph.make
 
-    let ComputeDependencyGraphForFile (priorSnapshot: FSharpProjectSnapshot) parsedInputs =
+    let ComputeDependencyGraphForFile (tcConfig: TcConfig) (priorSnapshot: FSharpProjectSnapshot) parsedInputs =
         let key = priorSnapshot.SourceFiles.Key(DependencyGraphType.File) 
         //let lastFileIndex = (parsedInputs |> Array.length) - 1
         //caches.DependencyGraph.Get(key, computeDependencyGraph parsedInputs (Graph.subGraphFor lastFileIndex))
-        caches.DependencyGraph.Get(key, computeDependencyGraph parsedInputs (removeImplFilesThatHaveSignaturesExceptLastOne priorSnapshot))
+        caches.DependencyGraph.Get(key, computeDependencyGraph tcConfig parsedInputs (removeImplFilesThatHaveSignaturesExceptLastOne priorSnapshot))
 
-    let ComputeDependencyGraphForProject (projectSnapshot: FSharpProjectSnapshot) parsedInputs =
+    let ComputeDependencyGraphForProject (tcConfig: TcConfig) (projectSnapshot: FSharpProjectSnapshot) parsedInputs =
         let key = projectSnapshot.SourceFiles.Key(DependencyGraphType.Project)
         //caches.DependencyGraph.Get(key, computeDependencyGraph parsedInputs (removeImplFilesThatHaveSignatures projectSnapshot))
-        caches.DependencyGraph.Get(key, computeDependencyGraph parsedInputs id)
+        caches.DependencyGraph.Get(key, computeDependencyGraph tcConfig parsedInputs id)
 
     let ComputeTcIntermediate
         (projectSnapshot: FSharpProjectSnapshot)
         (dependencyGraph: Graph<FileIndex>)
-        (fileIndex: FileIndex)
+        (node: NodeToTypeCheck)
         (parsedInput: ParsedInput, parseErrors)
         bootstrapInfo
         (prevTcInfo: TcInfo)
         =
 
-        //let dependencyFiles = dependencyGraph |> Graph.subGraphFor fileIndex |> Graph.nodes
         ignore dependencyGraph
-
-        //let key =
-        //    { new ICacheKey<_, _> with
-        //        member _.GetLabel() = parsedInput.FileName |> shortPath
-        //        member _.GetKey() = (projectSnapshot.ProjectFileName, fileIndex)
-        //        member _.GetVersion() = 
-        //            //projectSnapshot.OnlyWith(dependencyFiles).Key,
-        //            projectSnapshot.UpTo(fileIndex).WithoutImplFilesThatHaveSignaturesExceptLastOne.Key.GetVersion() }
 
         let key = projectSnapshot.FileKey parsedInput.FileName
 
@@ -1002,8 +1009,6 @@ type internal TransparentCompiler
 
                 let input, moduleNamesDict =
                     DeduplicateParsedInputModuleName prevTcInfo.moduleNamesDict input
-
-                let node = NodeToTypeCheck.PhysicalFile fileIndex // TODO: is this correct?
 
                 let! finisher =
                     CheckOneInputWithCallback
@@ -1049,7 +1054,7 @@ type internal TransparentCompiler
             match fileNode with
             | NodeToTypeCheck.PhysicalFile index ->
                 let input, parseErrors, _ = parsedInputs[index]
-                let! tcIntermediate = ComputeTcIntermediate projectSnapshot dependencyFiles index (input, parseErrors) bootstrapInfo tcInfo
+                let! tcIntermediate = ComputeTcIntermediate projectSnapshot dependencyFiles fileNode (input, parseErrors) bootstrapInfo tcInfo
                 let (Finisher (node = node; finisher = finisher)) = tcIntermediate.finisher
 
                 return
@@ -1159,7 +1164,7 @@ type internal TransparentCompiler
                 let! parsedInputs = files |> Seq.map (ComputeParseFile bootstrapInfo) |> Async.Parallel
 
                 let! graph, dependencyFiles =
-                    ComputeDependencyGraphForFile priorSnapshot (parsedInputs |> Array.map p13)
+                    ComputeDependencyGraphForFile bootstrapInfo.TcConfig priorSnapshot (parsedInputs |> Array.map p13)
                     //ComputeDependencyGraphForProject priorSnapshot (parsedInputs |> Array.map p13)
 
                 let! results, tcInfo =
@@ -1208,13 +1213,6 @@ type internal TransparentCompiler
         FSharpParseFileResults(diagnostics, parseTree, true, [||])
 
     let ComputeParseAndCheckFileInProject (fileName: string) (projectSnapshot: FSharpProjectSnapshot) =
-        //let key = {
-        //    new ICacheKey<_, _> with 
-        //        member _.GetLabel() = $"{fileName |> shortPath} in {projectSnapshot.Key.GetLabel()}"
-        //        member _.GetKey() = fileName, projectSnapshot.Key.GetKey()
-        //        member _.GetVersion() = projectSnapshot.Key.GetVersion()
-        //}
-
         caches.ParseAndCheckFileInProject.Get(
             projectSnapshot.FileKey fileName,
             async {
@@ -1314,7 +1312,7 @@ type internal TransparentCompiler
                     |> Async.Parallel
 
                 let! graph, dependencyFiles =
-                    ComputeDependencyGraphForProject projectSnapshot (parsedInputs |> Array.map p13)
+                    ComputeDependencyGraphForProject bootstrapInfo.TcConfig projectSnapshot (parsedInputs |> Array.map p13)
 
                 return!
                     processTypeCheckingGraph
@@ -1417,7 +1415,7 @@ type internal TransparentCompiler
             }
         )
 
-    let ComputeGetAssemblyData (projectSnapshot: FSharpProjectSnapshot) =
+    let ComputeAssemblyData (projectSnapshot: FSharpProjectSnapshot) =
         caches.AssemblyData.Get(
             projectSnapshot.WithoutImplFilesThatHaveSignatures.Key,
             async {
@@ -1510,7 +1508,6 @@ type internal TransparentCompiler
         }
 
     let ComputeSemanticClassification (fileName: string, projectSnapshot: FSharpProjectSnapshot) =
-
         caches.SemanticClassification.Get(
             projectSnapshot.FileKey fileName,
             async {
@@ -1541,7 +1538,6 @@ type internal TransparentCompiler
         )
 
     let ComputeItemKeyStore (fileName: string, projectSnapshot: FSharpProjectSnapshot) =
-        
         caches.ItemKeyStore.Get(
             projectSnapshot.FileKey fileName,
             async {
@@ -1604,7 +1600,7 @@ type internal TransparentCompiler
         }
 
     member _.GetAssemblyData(projectSnapshot: FSharpProjectSnapshot, _userOpName) =
-        ComputeGetAssemblyData projectSnapshot |> NodeCode.AwaitAsync
+        ComputeAssemblyData projectSnapshot |> NodeCode.AwaitAsync
 
     member _.Caches = caches
 

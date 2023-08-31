@@ -112,30 +112,6 @@ type DelayedILModuleReader =
             }
         | _ -> cancellable.Return(Some this.result)
 
-//type FSharpFileKey = string * string
-
-//// TODO: use stamp if we have it?
-//[<DebuggerDisplay("{DebuggerDisplay}")>]
-//type FSharpProjectSnapshotKey =
-//    {
-//        ProjectFileName: string
-//        SourceFiles: FSharpFileKey list
-//        OtherOptions: string list
-//        ReferencedProjects: FSharpProjectSnapshotKey list
-
-//        // Do we need these?
-//        IsIncompleteTypeCheckEnvironment: bool
-//        UseScriptResolutionRules: bool
-//    }
-
-//    member this.LastFile = this.SourceFiles |> List.last
-
-//    member this.DebuggerDisplay =
-//        let path, version = this.LastFile
-//        $"{Path.GetFileNameWithoutExtension this.ProjectFileName} {Path.GetFileName path} {version}"
-
-//    override this.ToString() = this.DebuggerDisplay
-
 [<NoComparison; CustomEquality>]
 type FSharpFileSnapshot =
     {
@@ -255,19 +231,6 @@ type FSharpProjectSnapshot =
             let snapshot = this.WithoutImplFilesThatHaveSignatures
             { snapshot with SourceFiles = snapshot.SourceFiles @ [lastFile] }
 
-    //member this.Key' =
-    //    {
-    //        ProjectFileName = this.ProjectFileName
-    //        SourceFiles = this.SourceFiles |> List.map (fun x -> x.Key)
-    //        OtherOptions = this.OtherOptions
-    //        ReferencedProjects =
-    //            this.ReferencedProjects
-    //            |> List.map (function
-    //                | FSharpReference (_, x) -> x.Key)
-    //        IsIncompleteTypeCheckEnvironment = this.IsIncompleteTypeCheckEnvironment
-    //        UseScriptResolutionRules = this.UseScriptResolutionRules
-    //    }
-
     member this.SourceFileNames = this.SourceFiles |> List.map (fun x -> x.FileName)
 
     member this.CommandLineOptions = 
@@ -278,7 +241,6 @@ type FSharpProjectSnapshot =
     member this.WithoutFileVersions =
         { this with
             SourceFiles = this.SourceFiles |> List.map (fun x -> { x with Version = "" })
-            // TODO: ReferencedProjects without file versions?
         }
 
     override this.ToString() =
