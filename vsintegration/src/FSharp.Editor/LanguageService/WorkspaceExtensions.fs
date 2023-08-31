@@ -14,6 +14,7 @@ open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Symbols
 
 open CancellableTasks
+open Microsoft.VisualStudio.FSharp.Editor.CancellableTasks
 
 [<AutoOpen>]
 module private CheckerExtensions =
@@ -350,8 +351,9 @@ type Document with
                         fastCheck = this.Project.IsFastFindReferencesEnabled
                     )
 
-            do! symbolUses 
-                |> Seq.map onFound 
+            do!
+                symbolUses
+                |> Seq.map onFound
                 |> CancellableTask.whenAll
                 |> CancellableTask.ignore
         }
@@ -420,9 +422,10 @@ type Project with
                 |> Seq.filter (fun document -> not (canSkipDocuments.Contains document.FilePath))
 
             if this.IsFastFindReferencesEnabled then
-                do! documents 
+                do!
+                    documents
                     |> Seq.map (fun doc -> doc.FindFSharpReferencesAsync(symbol, (fun range -> onFound doc range), userOpName))
-                    |> CancellableTask.whenAll         
+                    |> CancellableTask.whenAll
             else
                 for doc in documents do
                     do! doc.FindFSharpReferencesAsync(symbol, (onFound doc), userOpName)
