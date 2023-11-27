@@ -2,6 +2,7 @@ namespace Internal.Utilities.Hashing
 
 open System
 open System.Threading
+open System.IO.Hashing
 
 /// Tools for hashing things with MD5 into a string that can be used as a cache key.
 module internal Md5Hasher =
@@ -21,6 +22,38 @@ module internal Md5Hasher =
 
         Array.append sbytes bytes
         |> computeHash
+        |> System.BitConverter.ToString
+        |> (fun x -> x.Replace("-", ""))
+
+    let addString (s: string) (s2: string) =
+        s |> System.Text.Encoding.UTF8.GetBytes |> addBytes <| s2
+
+    let addSeq<'item> (items: 'item seq) (addItem: 'item -> string -> string) (s: string) =
+        items |> Seq.fold (fun s a -> addItem a s) s
+
+    let addStrings strings = addSeq strings addString
+
+    // If we use this make it an extension method?
+    //let addVersions<'a, 'b when 'a :> ICacheKey<'b, string>> (versions: 'a seq) (s: string) =
+    //    versions |> Seq.map (fun x -> x.GetVersion()) |> addStrings <| s
+
+    let addBool (b: bool) (s: string) =
+        b |> BitConverter.GetBytes |> addBytes <| s
+
+    let addDateTime (dt: System.DateTime) (s: string) = dt.Ticks.ToString() |> addString <| s
+
+module internal XxHasher =
+    
+    let empty = String.Empty
+
+    let hashString (s: string)=
+        s |> System.Text.Encoding.UTF8.GetBytes |> XxHash64.Hash
+
+    let addBytes (bytes: byte array) (s: string) =
+        let sbytes = s |> hashString
+
+        Array.append sbytes bytes
+        |> XxHash64.Hash
         |> System.BitConverter.ToString
         |> (fun x -> x.Replace("-", ""))
 

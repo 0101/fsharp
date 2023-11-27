@@ -153,6 +153,11 @@ type internal FSharpProjectSnapshot =
 
     member internal FileKey: fileName: string -> ICacheKey<(string * ProjectSnapshotKey), FSharpProjectSnapshotVersion>
 
+    member GetMd5Version: unit -> string
+    member GetXxVersion: unit -> string
+
+    member GetDebugVersion: unit -> FSharpProjectSnapshotDebugVersion
+
     interface ICacheKey<ProjectSnapshotKey, FSharpProjectSnapshotVersion>
 
 and internal FSharpProjectSnapshotWithSources =
@@ -316,6 +321,8 @@ type FSharpProjectSnapshot with
         getFileSnapshot: (FSharpProjectOptions -> string -> Async<FSharpFileSnapshot>) *
         ?snapshotAccumulator: Dictionary<FSharpProjectOptions, FSharpProjectSnapshot> ->
             Async<FSharpProjectSnapshot>
+
+    static member GetFileSnapshotFromDisk: 'a -> fileName: string -> Async<FSharpFileSnapshot>
 
     /// Create snapshot from FSharpProjectOptions using the filesystem to retrieve file contents.
     static member FromOptions: options: FSharpProjectOptions -> Async<FSharpProjectSnapshot>

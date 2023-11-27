@@ -182,6 +182,9 @@ module private CheckerExtensions =
             let! snapshot = FSharpProjectSnapshot.FromOptions(options, getFileSnapshot, ?snapshotAccumulator = snapshotAccumulatorOpt)
 
             let _json = dumpToJson snapshot
+            //let dir = "D:/code/fsharp-snapshots"
+            //let path = System.IO.Path.Combine(dir, snapshot.ProjectFileName + ".json")
+            //System.IO.File.WriteAllText(path, _json)
 
             return snapshot
         }
