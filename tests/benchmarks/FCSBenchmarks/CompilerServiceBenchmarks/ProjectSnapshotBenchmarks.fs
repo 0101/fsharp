@@ -9,6 +9,10 @@ open FSharp.Test.ProjectGeneration
 open BenchmarkDotNet.Engines
 open Newtonsoft.Json.Linq
 open Newtonsoft.Json
+open BenchmarkDotNet.Diagnosers
+open System
+
+//open BenchmarkDotNet.Diagnostics.Windows.Configs
 
 
 [<Literal>]
@@ -109,17 +113,21 @@ module internal FSharpProjectSnapshotSerialization =
 type Hashing =
     | None = 1
     | Md5 = 2
-    | XxHash = 3
+    | Md5Bytes = 3
+    | XxHash = 4
+    | XxHashBytes = 5
 
 
 [<MemoryDiagnoser>]
 [<ThreadingDiagnoser>]
 [<BenchmarkCategory(FSharpCategory)>]
 //[<SimpleJob(warmupCount=1,iterationCount=4)>]
+//[<EtwProfiler(performExtraBenchmarksRun=false)>]
+[<EventPipeProfiler(EventPipeProfile.CpuSampling)>]
 type SnapshotVersioningBenchmark() =
 
-    let file = "D:/code/fsharp-snapshots/ComponentTests.json"
-    let fileChanged = "D:/code/fsharp-snapshots/ComponentTestsChanged.json"
+    let file = "D:/code/fsharp-snapshots/FSharp.Compiler.ComponentTests.json"
+    let fileChanged = "D:/code/fsharp-snapshots/FSharp.Compiler.ComponentTests-Changed.json"
 
     let mutable snapshot = Unchecked.defaultof<FSharpProjectSnapshot>
     let mutable snapshotChanged = Unchecked.defaultof<FSharpProjectSnapshot>
@@ -127,14 +135,20 @@ type SnapshotVersioningBenchmark() =
     let mutable md5Version = Unchecked.defaultof<_>
     let mutable md5VersionChanged = Unchecked.defaultof<_>
 
+    let mutable md5ByteVersion = Unchecked.defaultof<_>
+    let mutable md5ByteVersionChanged = Unchecked.defaultof<_>
+
     let mutable debugVersion = Unchecked.defaultof<_>
     let mutable debugVersionChanged = Unchecked.defaultof<_>
 
     let mutable xxVersion = Unchecked.defaultof<_>
     let mutable xxVersionChanged = Unchecked.defaultof<_>
 
+    let mutable xxBytesVersion = Unchecked.defaultof<_>
+    let mutable xxBytesVersionChanged = Unchecked.defaultof<_>
+
     [<ParamsAllValues>]
-    member val ProjectType = Hashing.None with get,set
+    member val HashingAlgorithm = Hashing.None with get,set
 
     [<GlobalSetup>]
     member this.Setup() =
@@ -144,13 +158,17 @@ type SnapshotVersioningBenchmark() =
         debugVersionChanged <- snapshotChanged.GetDebugVersion()
         md5Version <- snapshot.GetMd5Version()
         md5VersionChanged <- snapshotChanged.GetMd5Version()
+        md5ByteVersion <- snapshot.GetMd5ByteVersion() |> BitConverter.ToString
+        md5ByteVersionChanged <- snapshotChanged.GetMd5ByteVersion() |> BitConverter.ToString
         xxVersion <- snapshot.GetXxVersion()
         xxVersionChanged <- snapshotChanged.GetXxVersion()
+        xxBytesVersion <- snapshot.GetXxByteVersion() |> BitConverter.ToString
+        xxBytesVersionChanged <- snapshotChanged.GetXxByteVersion() |> BitConverter.ToString
 
     [<Benchmark>]
     member this.ConstructVersion() =
 
-        match this.ProjectType with
+        match this.HashingAlgorithm with
         | Hashing.None -> 
             debugVersion <- snapshot.GetDebugVersion()
             debugVersionChanged <- snapshotChanged.GetDebugVersion()
@@ -159,17 +177,25 @@ type SnapshotVersioningBenchmark() =
             md5Version <- snapshot.GetMd5Version()
             md5VersionChanged <- snapshotChanged.GetMd5Version()
 
+        | Hashing.Md5Bytes -> 
+            md5Version <- snapshot.GetMd5ByteVersion() |> BitConverter.ToString
+            md5VersionChanged <- snapshotChanged.GetMd5ByteVersion() |> BitConverter.ToString
+
         | Hashing.XxHash -> 
             xxVersion <- snapshot.GetXxVersion()
             xxVersionChanged <- snapshotChanged.GetXxVersion()
 
+        | Hashing.XxHashBytes -> 
+            xxBytesVersion <- snapshot.GetXxByteVersion() |> BitConverter.ToString
+            xxBytesVersionChanged <- snapshotChanged.GetXxByteVersion() |> BitConverter.ToString
+
         | _ -> failwith "oops"
 
-    [<Benchmark>]
+    //[<Benchmark>]
     member this.VersionComparison() =
         
         let areEqual = 
-            match this.ProjectType with
+            match this.HashingAlgorithm with
             | Hashing.None -> 
                 let mutable result = true
                 for i in 0..100 do
@@ -185,5 +211,11 @@ type SnapshotVersioningBenchmark() =
                 for i in 0..100 do
                     result <- result && xxVersion = xxVersionChanged
                 result
+            | Hashing.XxHashBytes -> 
+                let mutable result = true
+                for i in 0..100 do
+                    result <- result && xxBytesVersion = xxBytesVersionChanged
+                result
+
             | _ -> failwith "oops"
-        if areEqual then failwith "Versions reported as equal but they should be different" 
+        if areEqual then failwith "Versions reported as equal but they should be different"

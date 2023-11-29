@@ -3,6 +3,7 @@
   <ItemGroup>
     <FileSignInfo Include="Nerdbank.Streams.dll" CertificateName="None" />
     <FileSignInfo Include="Newtonsoft.Json.dll" CertificateName="None" />
+    <FileSignInfo Include="System.IO.Hashing.dll" CertificateName="None" />
   </ItemGroup>
 
   <PropertyGroup>

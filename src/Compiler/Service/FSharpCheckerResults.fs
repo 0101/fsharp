@@ -122,7 +122,9 @@ type FSharpFileSnapshot =
         GetSource: unit -> Task<ISourceText>
     }
 
-    member this.IsSignatureFile = this.FileName.ToLower().EndsWith(".fsi")
+    member this.IsSignatureFile =
+        let length = this.FileName.Length
+        this.FileName.[length - 1] = 'i'
 
     override this.Equals(o) =
         match o with
@@ -147,7 +149,9 @@ type FSharpFileSnapshotWithSource =
         IsExe: bool
     }
 
-    member this.IsSignatureFile = this.FileName.ToLower().EndsWith(".fsi")
+    member this.IsSignatureFile =
+        let length = this.FileName.Length
+        this.FileName.[length - 1] = 'i'
 
 type ReferenceOnDisk =
     { Path: string; LastModified: DateTime }
@@ -287,10 +291,24 @@ type FSharpProjectSnapshot =
         |> XxHasher.addStrings this.OtherOptions
         |> XxHasher.addStrings (
             this.ReferencedProjects
-            |> Seq.map (fun (FSharpReference (_name, p)) -> p.WithoutImplFilesThatHaveSignatures.GetMd5Version())
+            |> Seq.map (fun (FSharpReference (_name, p)) -> p.WithoutImplFilesThatHaveSignatures.GetXxVersion())
         )
         |> XxHasher.addBool this.IsIncompleteTypeCheckEnvironment
         |> XxHasher.addBool this.UseScriptResolutionRules
+
+    member this.GetXxByteVersion() =
+        XxByteHasher.empty
+        |> XxByteHasher.addString this.ProjectFileName
+        |> XxByteHasher.addStrings (this.SourceFiles |> Seq.map (fun x -> x.FileName))
+        |> XxByteHasher.addStrings (this.SourceFiles |> Seq.map (fun x -> x.Version))
+        |> XxByteHasher.addSeq this.ReferencesOnDisk (fun r -> XxByteHasher.addString r.Path >> XxByteHasher.addDateTime r.LastModified)
+        |> XxByteHasher.addStrings this.OtherOptions
+        |> XxByteHasher.addBytes' (
+            this.ReferencedProjects
+            |> Seq.map (fun (FSharpReference (_name, p)) -> p.WithoutImplFilesThatHaveSignatures.GetXxByteVersion())
+        )
+        |> XxByteHasher.addBool this.IsIncompleteTypeCheckEnvironment
+        |> XxByteHasher.addBool this.UseScriptResolutionRules
 
     member this.GetMd5Version() =
         Md5Hasher.empty
@@ -305,6 +323,20 @@ type FSharpProjectSnapshot =
         )
         |> Md5Hasher.addBool this.IsIncompleteTypeCheckEnvironment
         |> Md5Hasher.addBool this.UseScriptResolutionRules
+
+     member this.GetMd5ByteVersion() =
+        Md5ByteHasher.empty
+        |> Md5ByteHasher.addString this.ProjectFileName
+        |> Md5ByteHasher.addStrings (this.SourceFiles |> Seq.map (fun x -> x.FileName))
+        |> Md5ByteHasher.addStrings (this.SourceFiles |> Seq.map (fun x -> x.Version))
+        |> Md5ByteHasher.addSeq this.ReferencesOnDisk (fun r -> Md5ByteHasher.addString r.Path >> Md5ByteHasher.addDateTime r.LastModified)
+        |> Md5ByteHasher.addStrings this.OtherOptions
+        |> Md5ByteHasher.addBytes' (
+            this.ReferencedProjects
+            |> Seq.map (fun (FSharpReference (_name, p)) -> p.WithoutImplFilesThatHaveSignatures.GetMd5ByteVersion())
+        )
+        |> Md5ByteHasher.addBool this.IsIncompleteTypeCheckEnvironment
+        |> Md5ByteHasher.addBool this.UseScriptResolutionRules
 
     member this.GetDebugVersion() : FSharpProjectSnapshotDebugVersion =
         {
@@ -326,7 +358,7 @@ type FSharpProjectSnapshot =
         member this.GetKey() =
             this.ProjectFileName, this.OutputFileName |> Option.defaultValue ""
 
-        member this.GetVersion() = this.GetDebugVersion()
+        member this.GetVersion() = this.GetMd5ByteVersion() |> Md5ByteHasher.toString
 
 and FSharpProjectSnapshotWithSources =
     {
@@ -405,11 +437,19 @@ and FSharpProjectSnapshotWithSources =
         this.ProjectSnapshot.GetMd5Version()
         |> Md5Hasher.addStrings (this.SourceFiles |> Seq.map (fun x -> x.SourceHash))
 
+    member this.GetXxByteVersion() =
+        this.ProjectSnapshot.GetXxByteVersion()
+        |> XxByteHasher.addStrings (this.SourceFiles |> Seq.map (fun x -> x.SourceHash))
+
+    member this.GetMd5ByteVersion() =
+        this.ProjectSnapshot.GetMd5ByteVersion()
+        |> Md5ByteHasher.addStrings (this.SourceFiles |> Seq.map (fun x -> x.SourceHash))
+
     interface ICacheKey<ProjectSnapshotKey, FSharpProjectSnapshotWithSourcesVersion> with
         member this.GetLabel() = this.ProjectSnapshot.Key.ToString()
         member this.GetKey() = this.ProjectSnapshot.Key.GetKey()
 
-        member this.GetVersion() = this.GetDebugVersion()
+        member this.GetVersion() = this.GetMd5ByteVersion() |> Md5ByteHasher.toString
 
 and FSharpProjectSnapshotWithSourcesDebugVersion =
     {
@@ -417,7 +457,7 @@ and FSharpProjectSnapshotWithSourcesDebugVersion =
         SourceVersions: string list
     }
 
-and FSharpProjectSnapshotWithSourcesVersion = FSharpProjectSnapshotWithSourcesDebugVersion
+and FSharpProjectSnapshotWithSourcesVersion = string
 
 and FSharpProjectSnapshotDebugVersion =
     {
@@ -430,7 +470,7 @@ and FSharpProjectSnapshotDebugVersion =
         UseScriptResolutionRules: bool
     }
 
-and FSharpProjectSnapshotVersion = FSharpProjectSnapshotDebugVersion
+and FSharpProjectSnapshotVersion = string
 
 and [<NoComparison; CustomEquality>] public FSharpReferencedProjectSnapshot =
     internal

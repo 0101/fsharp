@@ -154,7 +154,9 @@ type internal FSharpProjectSnapshot =
     member internal FileKey: fileName: string -> ICacheKey<(string * ProjectSnapshotKey), FSharpProjectSnapshotVersion>
 
     member GetMd5Version: unit -> string
+    member GetMd5ByteVersion: unit -> byte array
     member GetXxVersion: unit -> string
+    member GetXxByteVersion: unit -> byte array
 
     member GetDebugVersion: unit -> FSharpProjectSnapshotDebugVersion
 
@@ -183,7 +185,7 @@ and internal FSharpProjectSnapshotWithSourcesDebugVersion =
     { ProjectSnapshotVersion: FSharpProjectSnapshotDebugVersion
       SourceVersions: string list }
 
-and internal FSharpProjectSnapshotWithSourcesVersion = FSharpProjectSnapshotWithSourcesDebugVersion
+and internal FSharpProjectSnapshotWithSourcesVersion = string
 
 and internal FSharpProjectSnapshotDebugVersion =
     { ProjectFileName: string
@@ -194,7 +196,7 @@ and internal FSharpProjectSnapshotDebugVersion =
       IsIncompleteTypeCheckEnvironment: bool
       UseScriptResolutionRules: bool }
 
-and internal FSharpProjectSnapshotVersion = FSharpProjectSnapshotDebugVersion
+and internal FSharpProjectSnapshotVersion = string
 
 and [<NoComparison; CustomEquality>] internal FSharpReferencedProjectSnapshot =
     internal
