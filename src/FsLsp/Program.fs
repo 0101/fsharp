@@ -1,56 +1,55 @@
-﻿// F# does not have an exact equivalent to C#'s namespaces, but you can use modules for a similar effect
-module Microsoft.CommonLanguageServerProtocol.Framework.Example
+﻿module FSharp.Compiler.LanguageServer.Program
 
 open System
 open System.Threading.Tasks
 open System.Threading
 open Microsoft.CommonLanguageServerProtocol.Framework.Handlers
+open Microsoft.CommonLanguageServerProtocol.Framework
 open Microsoft.Extensions.DependencyInjection
 open Roslyn.LanguageServer.Protocol
 open StreamJsonRpc
 open System.Runtime.Serialization
 open Newtonsoft.Json
 
-open Ionide.LanguageServerProtocol.Types
-
 type ExampleRequestContext(lspServices: ILspServices, logger: ILspLogger) =
     member val LspServices = lspServices with get, set
     member val Logger = logger with get, set
 
 type ExampleRequestContextFactory(lspServices: ILspServices) =
-    interface IRequestContextFactory<ExampleRequestContext> with
-        member this.CreateRequestContextAsync<'TRequestParam>(queueItem: IQueueItem<ExampleRequestContext>, param: 'TRequestParam, cancellationToken: CancellationToken) =
-            let logger = lspServices.GetRequiredService<ILspLogger>()
-            let requestContext = ExampleRequestContext(lspServices, logger)
-            Task.FromResult(requestContext)
+    inherit AbstractRequestContextFactory<ExampleRequestContext>()
+
+    member this.CreateRequestContextAsync<'TRequestParam>(queueItem: IQueueItem<ExampleRequestContext>, param: 'TRequestParam, cancellationToken: CancellationToken) =
+        let logger = lspServices.GetRequiredService<ILspLogger>()
+        let requestContext = ExampleRequestContext(lspServices, logger)
+        Task.FromResult(requestContext)
 
 
 
-//[<DataContract>]
-//type InitializeParams() =
-//    [<DataMember(Name = "processId")>]
-//    [<JsonProperty(NullValueHandling = NullValueHandling.Include)>]
-//    member val ProcessId : int = 0 with get, set
-//    [<DataMember(Name = "locale")>]
-//    [<JsonProperty(NullValueHandling = NullValueHandling.Ignore)>]
-//    member val Locale : string = null with get, set
-//    [<DataMember(Name = "rootPath")>]
-//    [<JsonProperty(NullValueHandling = NullValueHandling.Ignore)>]
-//    [<Obsolete("Deprecated in favour of RootUri")>]
-//    member val RootPath : string = null with get, set
-//    [<DataMember(Name = "rootUri")>]
-//    //[<JsonConverter(typeof<DocumentUriConverter>)>]
-//    [<JsonProperty(NullValueHandling = NullValueHandling.Include)>]
-//    member val RootUri : Uri = null with get, set
-//    [<DataMember(Name = "initializationOptions")>]
-//    [<JsonProperty(NullValueHandling = NullValueHandling.Ignore)>]
-//    member val InitializationOptions : obj = null with get, set
-//    [<DataMember(Name = "capabilities")>]
-//    member val Capabilities : obj = null with get, set
-//    [<DataMember(Name = "trace")>]
-//    //[<DefaultValue(typeof<TraceSetting>, "off")>]
-//    [<JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)>]
-//    member val Trace : string = "off" with get, set
+[<DataContract>]
+type InitializeParams() =
+    [<DataMember(Name = "processId")>]
+    [<JsonProperty(NullValueHandling = NullValueHandling.Include)>]
+    member val ProcessId : int = 0 with get, set
+    [<DataMember(Name = "locale")>]
+    [<JsonProperty(NullValueHandling = NullValueHandling.Ignore)>]
+    member val Locale : string = null with get, set
+    [<DataMember(Name = "rootPath")>]
+    [<JsonProperty(NullValueHandling = NullValueHandling.Ignore)>]
+    [<Obsolete("Deprecated in favour of RootUri")>]
+    member val RootPath : string = null with get, set
+    [<DataMember(Name = "rootUri")>]
+    //[<JsonConverter(typeof<DocumentUriConverter>)>]
+    [<JsonProperty(NullValueHandling = NullValueHandling.Include)>]
+    member val RootUri : Uri = null with get, set
+    [<DataMember(Name = "initializationOptions")>]
+    [<JsonProperty(NullValueHandling = NullValueHandling.Ignore)>]
+    member val InitializationOptions : obj = null with get, set
+    [<DataMember(Name = "capabilities")>]
+    member val Capabilities : obj = null with get, set
+    [<DataMember(Name = "trace")>]
+    //[<DefaultValue(typeof<TraceSetting>, "off")>]
+    [<JsonProperty(DefaultValueHandling = DefaultValueHandling.Ignore)>]
+    member val Trace : string = "off" with get, set
 
 
 [<DataContract>]
@@ -60,7 +59,7 @@ type InitializeResult() =
     member val Capabilities : obj = null with get, set
   
   
-//type InitializedParams() = class end
+type InitializedParams() = class end
 
 
 
@@ -136,7 +135,7 @@ type ExampleLanguageServer(jsonRpc: JsonRpc, logger: ILspLogger, addExtraHandler
         base.Initialize()
 
     member private this.GetBaseHandlerProvider() =
-        base.GetHandlerProvider()
+        base.HandlerProvider
 
     override this.ConstructLspServices() =
         let serviceCollection = new ServiceCollection()

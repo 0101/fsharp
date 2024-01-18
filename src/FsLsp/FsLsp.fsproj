@@ -6,8 +6,11 @@
 	</PropertyGroup>
 
 	<ItemGroup Label="Package References">
-		<PackageReference Include="Ionide.LanguageServerProtocol" Version="0.4.22" />
 		<PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.0" />
+		<PackageReference Include="Microsoft.CommonLanguageServerProtocol.Framework" Version="4.10.0-1.24067.1" />
+		<PackageReference Include="Microsoft.CodeAnalysis.LanguageServer.Protocol" Version="4.10.0-1.24067.1" />
+		<PackageReference Include="StreamJsonRpc" Version="2.17.13" />
+
 	</ItemGroup>
 
 	<ItemGroup>
@@ -20,7 +23,6 @@
 
 
 	<ItemGroup>
-		<ProjectReference Include="..\..\..\roslyn\src\Features\LanguageServer\Microsoft.CommonLanguageServerProtocol.Framework\Microsoft.CommonLanguageServerProtocol.Framework.csproj" />
 		<ProjectReference Include="..\..\..\roslyn\src\Features\LanguageServer\Protocol\Microsoft.CodeAnalysis.LanguageServer.Protocol.csproj" />
 	</ItemGroup>
 
