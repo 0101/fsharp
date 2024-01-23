@@ -309,8 +309,6 @@
     </None>
   </ItemGroup>
 
-  <ItemGroup />
-
   <ItemGroup>
     <None Include="**\*.bsl">
       <Link>%(RelativeDir)\BaseLine\%(Filename)%(Extension)</Link>
@@ -335,5 +333,6 @@
   <ItemGroup Condition="'$(FSHARPCORE_USE_PACKAGE)' == 'true'">
     <PackageReference Include="FSharp.Core" Version="$(FSharpCoreShippedPackageVersionValue)" />
   </ItemGroup>
+
 
 </Project>
