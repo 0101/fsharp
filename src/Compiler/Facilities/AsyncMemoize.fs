@@ -1,6 +1,7 @@
 namespace Internal.Utilities.Collections
 
 open System
+open System.Collections.Concurrent
 open System.Collections.Generic
 open System.Diagnostics
 open System.IO
@@ -129,7 +130,7 @@ type internal AsyncLock() =
 type internal CachingDiagnosticsLogger(originalLogger: DiagnosticsLogger option) =
     inherit DiagnosticsLogger($"CachingDiagnosticsLogger")
 
-    let capturedDiagnostics = ResizeArray()
+    let capturedDiagnostics = ConcurrentQueue()
 
     override _.ErrorCount =
         originalLogger
@@ -138,7 +139,7 @@ type internal CachingDiagnosticsLogger(originalLogger: DiagnosticsLogger option)
 
     override _.DiagnosticSink(diagnostic: PhasedDiagnostic, severity: FSharpDiagnosticSeverity) =
         originalLogger |> Option.iter (fun x -> x.DiagnosticSink(diagnostic, severity))
-        capturedDiagnostics.Add(diagnostic, severity)
+        capturedDiagnostics.Enqueue(diagnostic, severity)
 
     member _.CapturedDiagnostics = capturedDiagnostics |> Seq.toList
 
