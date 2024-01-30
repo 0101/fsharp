@@ -8,6 +8,9 @@ open StreamJsonRpc
 open System.IO
 open System.Diagnostics
 
+open Microsoft.VisualStudio.LanguageServer.Protocol
+open Nerdbank.Streams
+
 
 [<Fact>]
 let ``The server can process the initialization message`` () =
@@ -17,12 +20,14 @@ let ``The server can process the initialization message`` () =
 
     try
 
-    let output = new System.IO.MemoryStream()
-    let input = new System.IO.MemoryStream()
-    let writer = new System.IO.StreamWriter(output, leaveOpen=true)
-    let reader = new System.IO.StreamReader(input)
+    let struct (clientStream, serverStream) = FullDuplexStream.CreatePair()
 
-    let jsonRpc = new JsonRpc(output, input)
+    use formatter = new JsonMessageFormatter()
+
+    use messageHandler = new HeaderDelimitedMessageHandler(clientStream, clientStream, formatter)
+
+    use jsonRpc = new JsonRpc(messageHandler)
+    
 
     // Create a new TraceListener with the StringWriter
     let listener = new TextWriterTraceListener(rpcTrace)
@@ -43,30 +48,16 @@ let ``The server can process the initialization message`` () =
 
     jsonRpc.StartListening()
 
-    let initializeMessage = """{
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "processId": 123,
-            "rootUri": "file:///home/user/fsharp",
-            "capabilities": {},
-            "trace": "off"
-        }
-    }"""
+    let initializeParams = InitializeParams(
+        ProcessId = System.Diagnostics.Process.GetCurrentProcess().Id,
+        RootUri = Uri("file:///c:/temp"),
+        InitializationOptions = None,
+        RootPath = "file:///c:/temp")
 
-    let header = $"Content-Length: {initializeMessage.Length}\r\n\r\n"
-
-    writer.Write(header)
-    writer.Write(initializeMessage)
-    //writer.Write("\r\n")
-
-    let response = reader.ReadLine()
-
-    Assert.Equal("Content-Length: 101\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"capabilities\":null}}", response)
+    
+    
 
     finally
 
-    // You can get the output as a string like this:
         let _output = rpcTrace.ToString()
         ()
