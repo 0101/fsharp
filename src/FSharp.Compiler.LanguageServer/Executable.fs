@@ -9,7 +9,7 @@ let main argv =
 
     let jsonRpc = new JsonRpc(Console.OpenStandardOutput(), Console.OpenStandardInput())
 
-    let s = new FSharpLanguageServer(jsonRpc, (LspLogger Console.Out.Write) , None)
+    let s = new FSharpLanguageServer(jsonRpc, (LspLogger Console.Out.Write))
 
     jsonRpc.StartListening()
 

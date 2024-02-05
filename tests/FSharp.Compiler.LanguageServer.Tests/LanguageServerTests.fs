@@ -20,7 +20,7 @@ let ``The server can process the initialization message`` () =
 
     try
 
-    let struct (clientStream, serverStream) = FullDuplexStream.CreatePair()
+    let struct (clientStream, _serverStream) = FullDuplexStream.CreatePair()
 
     use formatter = new JsonMessageFormatter()
 
@@ -44,15 +44,15 @@ let ``The server can process the initialization message`` () =
 
     let log = ResizeArray()
 
-    let _s = new FSharpLanguageServer(jsonRpc, (LspLogger log.Add) , None)
+    let _s = new FSharpLanguageServer(jsonRpc, (LspLogger log.Add))
 
     jsonRpc.StartListening()
 
-    let initializeParams = InitializeParams(
-        ProcessId = System.Diagnostics.Process.GetCurrentProcess().Id,
-        RootUri = Uri("file:///c:/temp"),
-        InitializationOptions = None,
-        RootPath = "file:///c:/temp")
+    //let initializeParams = InitializeParams(
+    //    ProcessId = System.Diagnostics.Process.GetCurrentProcess().Id,
+    //    RootUri = Uri("file:///c:/temp"),
+    //    InitializationOptions = None,
+    //    RootPath = "file:///c:/temp")
 
     
     
