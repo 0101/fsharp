@@ -62,7 +62,7 @@ internal class FSharpLanguageServerProvider : LanguageServerProvider
         {
             try
             {
-                this.ProcessProjectAsync(project);
+                this.ProcessProject(project);
             }
             catch (Exception ex)
             {
@@ -78,7 +78,7 @@ internal class FSharpLanguageServerProvider : LanguageServerProvider
             PipeWriter.Create(serverStream));
     }
 
-    private void ProcessProjectAsync(IProjectSnapshot project)
+    private void ProcessProject(IProjectSnapshot project)
     {
         List<IQueryResultItem<IFileSnapshot>>? files = project.Files.Please();
         var references = project.ProjectReferences.Please();

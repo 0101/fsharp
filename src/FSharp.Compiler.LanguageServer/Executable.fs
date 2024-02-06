@@ -3,7 +3,6 @@
 open System
 open StreamJsonRpc
 
-
 [<EntryPoint>]
 let main argv =
 
