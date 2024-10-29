@@ -278,6 +278,16 @@ module Internal =
                     }
                 )
 
+type GraphBuilderOf<'Id, 'Val, 'T when 'Id: equality> internal (graph: IDependencyGraph<'Id, 'Val>, ids: 'Id seq, unwrap: 'Val seq -> 'T) =
+
+    member x.Ids = ids
+
+    member this.AddDependentNode(id, compute, unwrapNext) =
+        let builder =
+            graph.AddOrUpdateNode(id, ids, unwrap >> compute)
+        GraphBuilderOf(graph, ids, unwrapNext)
+
+
 open Internal
 open System.Runtime.CompilerServices
 

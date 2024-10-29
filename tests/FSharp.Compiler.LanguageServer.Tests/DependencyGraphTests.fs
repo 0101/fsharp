@@ -63,9 +63,7 @@ let ``We can add a dependency between existing nodes`` () =
 let ``Can remove a node and update dependents`` () =
     let graph = DependencyGraph()
     graph.AddOrUpdateNode(1, 1)
-        .AddDependentNode(2, fun deps ->
-            let _break = 0
-            deps |> Seq.sum |> (+) 1)
+        .AddDependentNode(2, fun deps -> deps |> Seq.sum |> (+) 1)
         .AddDependentNode(3, fun deps -> deps |> Seq.sum |> (+) 1) |> ignore
     graph.AddOrUpdateNode(4, [1; 3], fun deps -> deps |> Seq.sum |> (+) 1) |> ignore
 

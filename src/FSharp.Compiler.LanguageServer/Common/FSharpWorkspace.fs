@@ -98,6 +98,50 @@ module internal WorkspaceNode =
         | WorkspaceNodeKey.ReferenceOnDisk r -> Some r
         | _ -> None
 
+
+[<Extension>]
+type internal GraphTypeConstrainingExtensions =
+
+    [<Extension>]
+    static member AddOrUpdateFile(this: IDependencyGraph<_, _>, file: string, snapshot) =
+        this.AddOrUpdateNode(
+            WorkspaceNodeKey.SourceFile file,
+            WorkspaceNodeValue.SourceFile(snapshot)) |> ignore
+
+    [<Extension>]
+    static member AddFiles(this: IDependencyGraph<_, _>, files: seq<string * FSharpFileSnapshot>) =
+        let builder =
+            files
+            |> Seq.map (fun (file, snapshot) -> WorkspaceNodeKey.SourceFile file, WorkspaceNodeValue.SourceFile(snapshot))
+            |> this.AddList
+        GraphBuilderOf(this, builder.Ids, _.UnpackMany(WorkspaceNode.sourceFile))
+
+    [<Extension>]
+    static member AddReferencesOnDisk(this: IDependencyGraph<_, _>, references: seq<ReferenceOnDisk>) =
+        let builder =
+            references
+            |> Seq.map (fun r -> WorkspaceNodeKey.ReferenceOnDisk r.Path, WorkspaceNodeValue.ReferenceOnDisk r)
+            |> this.AddList
+        GraphBuilderOf(this, builder.Ids, _.UnpackMany(WorkspaceNode.referenceOnDisk))
+
+    [<Extension>]
+    static member AddProjectCore(this: GraphBuilderOf<_, _, ReferenceOnDisk seq>, projectIdentifier, (computeProjectCore)) =
+        this.AddDependentNode(
+            WorkspaceNodeKey.ProjectCore projectIdentifier,
+            computeProjectCore >> WorkspaceNodeValue.ProjectCore,
+            _.UnpackOne(WorkspaceNode.projectCore))
+
+    [<Extension>]
+    static member AddProjectBase(this: GraphBuilderOf<_, _, _>, projectIdentifier, (computeProjectBase: ProjectCore * FSharpReferencedProjectSnapshot seq -> ProjectCore * FSharpReferencedProjectSnapshot list)) =
+        this.AddDependentNode(
+            WorkspaceNodeKey.ProjectBase projectIdentifier,
+            computeProjectBase >> WorkspaceNodeValue.ProjectBase,
+            _.UnpackOne(WorkspaceNode.projectBase))
+
+
+
+
+
 /// This type holds the current state of an F# workspace (or, solution). It's mutable but thread-safe. It accepts updates to the state and can provide immutable snapshots of contained F# projects. The state can be built up incrementally by adding projects and dependencies between them.
 type FSharpWorkspace() =
 
@@ -144,21 +188,13 @@ type FSharpWorkspace() =
         openFiles.TryRemove(file.LocalPath) |> ignore
 
         // The file may have had changes that weren't saved to disk and are therefore undone by closing it.
-        depGraph.AddOrUpdateNode(
-            WorkspaceNodeKey.SourceFile file.LocalPath,
-            WorkspaceNodeValue.SourceFile(FSharpFileSnapshot.CreateFromFileSystem(file.LocalPath))
-        )
-        |> ignore
+        depGraph.AddOrUpdateFile(file.LocalPath, FSharpFileSnapshot.CreateFromFileSystem(file.LocalPath))
 
         this
 
     member this.ChangeFile(file: Uri, content) =
 
-        depGraph.AddOrUpdateNode(
-            WorkspaceNodeKey.SourceFile file.LocalPath,
-            WorkspaceNodeValue.SourceFile(FSharpFileSnapshot.CreateFromString(file.LocalPath, content))
-        )
-        |> ignore
+        depGraph.AddOrUpdateFile(file.LocalPath, FSharpFileSnapshot.CreateFromString(file.LocalPath, content))
 
         this.OpenFile(file, content)
 
@@ -232,30 +268,24 @@ type FSharpWorkspace() =
                         let fullPath = Path.Combine(directoryPath, line)
                         if not (File.Exists fullPath) then None else Some fullPath)
                 |> Seq.map (fun path ->
-                    WorkspaceNodeKey.SourceFile path,
-                    WorkspaceNodeValue.SourceFile(
-                        match openFiles.TryGetValue(path) with
-                        | true, content -> FSharpFileSnapshot.CreateFromString(path, content)
-                        | false, _ -> FSharpFileSnapshot.CreateFromFileSystem path
-                    ))
-                |> depGraph.AddList
+                    path,
+                    match openFiles.TryGetValue(path) with
+                    | true, content -> FSharpFileSnapshot.CreateFromString(path, content)
+                    | false, _ -> FSharpFileSnapshot.CreateFromFileSystem path)
+                |> depGraph.AddFiles
 
             let referencesOnDiskNodes =
-                referencesOnDisk
-                |> Seq.map (fun r -> WorkspaceNodeKey.ReferenceOnDisk r.Path, WorkspaceNodeValue.ReferenceOnDisk r)
-                |> depGraph.AddList
+                referencesOnDisk |> depGraph.AddReferencesOnDisk
 
             let projectCore =
-                referencesOnDiskNodes.AddDependentNode(
-                    WorkspaceNodeKey.ProjectCore projectIdentifier,
-                    (fun deps ->
-                        let refsOnDisk = deps.UnpackMany WorkspaceNode.referenceOnDisk |> Seq.toList
-
+                referencesOnDiskNodes.AddProjectCore(
+                    projectIdentifier,
+                    (fun refsOnDisk ->
                         ProjectCore(
                             ProjectFileName = projectPath,
                             OutputFileName = Some outputPath,
                             ProjectId = None,
-                            ReferencesOnDisk = refsOnDisk,
+                            ReferencesOnDisk = (refsOnDisk |> Seq.toList),
                             OtherOptions = otherOptions,
                             IsIncompleteTypeCheckEnvironment = false,
                             UseScriptResolutionRules = false,
@@ -263,9 +293,7 @@ type FSharpWorkspace() =
                             UnresolvedReferences = None,
                             OriginalLoadReferences = [],
                             Stamp = None
-                        )
-
-                        |> WorkspaceNodeValue.ProjectCore)
+                        ))
                 )
 
             let projectBase =
