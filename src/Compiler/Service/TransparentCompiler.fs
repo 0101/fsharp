@@ -1056,7 +1056,7 @@ type internal TransparentCompiler
                 |> Seq.map (fun f -> LoadSource f isExe (f.FileName = bootstrapInfo.LastFileName))
                 |> MultipleDiagnosticsLoggers.Parallel
 
-            return ProjectSnapshotWithSources(projectSnapshot.ProjectCore, projectSnapshot.ReferencedProjects, sources |> Array.toList)
+            return ProjectSnapshotWithSources(projectSnapshot.ProjectConfig, projectSnapshot.ReferencedProjects, sources |> Array.toList)
 
         }
 
@@ -1067,7 +1067,7 @@ type internal TransparentCompiler
                 member _.GetLabel() = file.FileName |> shortPath
 
                 member _.GetKey() =
-                    projectSnapshot.ProjectCore.Identifier, file.FileName
+                    projectSnapshot.ProjectConfig.Identifier, file.FileName
 
                 member _.GetVersion() =
                     projectSnapshot.ParsingVersion,
@@ -1467,7 +1467,7 @@ type internal TransparentCompiler
                 |> Seq.map (ComputeParseFile projectSnapshot tcConfig)
                 |> MultipleDiagnosticsLoggers.Parallel
 
-            return ProjectSnapshotBase<_>(projectSnapshot.ProjectCore, projectSnapshot.ReferencedProjects, parsedInputs |> Array.toList)
+            return ProjectSnapshotBase<_>(projectSnapshot.ProjectConfig, projectSnapshot.ReferencedProjects, parsedInputs |> Array.toList)
         }
 
     // Type check file and all its dependencies

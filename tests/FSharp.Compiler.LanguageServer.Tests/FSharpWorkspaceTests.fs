@@ -1,11 +1,26 @@
 module FSharpWorkspaceTests
 
 open System
+open System.IO
 open Xunit
 open FSharp.Compiler.LanguageServer.Common
 open FSharp.Compiler.CodeAnalysis.ProjectSnapshot
+open TestFramework
+open FSharp.Compiler.IO
 
 #nowarn "57"
+
+
+let minimalProject sourceFiles =
+    let projectPath = "test.fsproj"
+    let outputPath = "test.dll"
+    let compilerArgs = sourceFiles |> Seq.toArray
+    projectPath, outputPath, seq compilerArgs
+
+let sourceFileOnDisk (content: string) =
+    let path = getTemporaryFileName() + ".fs"
+    FileSystem.OpenFileForWriteShim(path).Write(content)
+    path
 
 [<Fact>]
 let ``Add project to workspace`` () =
@@ -55,8 +70,13 @@ let ``Open file in workspace`` () =
 [<Fact>]
 let ``Close file in workspace`` () =
     let workspace = FSharpWorkspace()
-    let fileUri = Uri("file:///test.fs")
-    let content = "let x = 1"
+
+    let contentOnDisk = "let x = 1"
+    let fileOnDisk = sourceFileOnDisk contentOnDisk
+    let project = minimalProject [ fileOnDisk ]
+
+    let projectIdentifier = workspace.AddProject project
+
     workspace.OpenFile(fileUri, content)
     workspace.CloseFile(fileUri)
     let projectSnapshot = workspace.GetProjectSnapshotForFile(fileUri)
