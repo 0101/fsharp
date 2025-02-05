@@ -25,6 +25,10 @@ open FSharp.Compiler.TcGlobals
 
 #if !NO_TYPEPROVIDERS
 open FSharp.Compiler.TypeProviders
+open System.Runtime.CompilerServices
+open System.Threading
+open System
+
 #endif
 
 /// Represents an interface to some of the functionality of TcImports, for loading assemblies

@@ -4,6 +4,8 @@
 /// constraint solving and method overload resolution.
 module internal FSharp.Compiler.TypeRelations
 
+open System
+
 open FSharp.Compiler.Features
 open Internal.Utilities.Collections
 open Internal.Utilities.Library
@@ -16,6 +18,9 @@ open FSharp.Compiler.TypedTreeOps
 open FSharp.Compiler.TypeHierarchy
 
 open Import
+open System.Threading
+open System.Runtime.CompilerServices
+open System.Diagnostics
 
 #nowarn "3391"
 
@@ -101,8 +106,54 @@ let TypesFeasiblyEquiv ndeep g amap m ty1 ty2 =
 let TypesFeasiblyEquivStripMeasures g amap m ty1 ty2 =
     TypesFeasiblyEquivalent true 0 g amap m ty1 ty2
 
+
+[<DebuggerDisplay("{DebuggerDisplay}")>]
+type Counter(cache: System.Collections.Concurrent.ConcurrentDictionary<TTypeCacheKey, bool>) =
+
+    let cacheObject = WeakReference(cache)
+
+    let mutable count = 0
+    let created = DateTime.Now
+
+    member _.Increment() = Interlocked.Increment(&count)
+    member _.Size = if cacheObject.IsAlive then (!! cacheObject.Target :?> System.Collections.Concurrent.ConcurrentDictionary<TTypeCacheKey, bool>).Count else 0
+    member _.Age = DateTime.Now - created
+    member _.Alive = cacheObject.IsAlive
+
+    member this.DebuggerDisplay =
+        seq {
+            if this.Alive then $"Alive (%A{this.Age})"
+            else "Dead"
+            $" Size: {this.Size}"
+        } |> String.concat ""
+
+
+[<DebuggerDisplay("{DebuggerDisplay}")>]
+type CacheWatch() =
+
+    let caches = System.Collections.Concurrent.ConcurrentDictionary<_,_>()
+    let uniqueCachesSeen = System.Collections.Concurrent.ConcurrentDictionary<_, _>()
+
+    member this.Increment (cache) =
+        uniqueCachesSeen.GetOrAdd(cache.GetHashCode(), ())
+        let counter = caches.GetOrAdd(cache.GetHashCode(), Counter(cache))
+        counter.Increment() |> ignore
+
+    member this.UniqueCachesSeen = uniqueCachesSeen.Count
+
+    member this.DebuggerDisplay =
+
+        let alive, dead = caches.Values |> Seq.toList |> List.partition _.Alive
+        let aliveCounts = alive |> List.sumBy _.Size
+
+        $"Alive: {alive.Length} Total entries: {aliveCounts} Dead: {dead.Length}"
+
+
+let cacheWatch = CacheWatch()
+
+
 let inline TryGetCachedTypeSubsumption (g: TcGlobals) (amap: ImportMap) key =
-    if g.compilationMode = CompilationMode.OneOff && g.langVersion.SupportsFeature LanguageFeature.UseTypeSubsumptionCache then
+    if true then
         match amap.TypeSubsumptionCache.TryGetValue(key) with
         | true, subsumes ->
             ValueSome subsumes
@@ -112,8 +163,9 @@ let inline TryGetCachedTypeSubsumption (g: TcGlobals) (amap: ImportMap) key =
         ValueNone
 
 let inline UpdateCachedTypeSubsumption (g: TcGlobals) (amap: ImportMap) key subsumes : unit =
-    if g.compilationMode = CompilationMode.OneOff && g.langVersion.SupportsFeature LanguageFeature.UseTypeSubsumptionCache then
+    if true then
         amap.TypeSubsumptionCache[key] <- subsumes
+        cacheWatch.Increment(amap.TypeSubsumptionCache)
 
 /// The feasible coercion relation. Part of the language spec.
 let rec TypeFeasiblySubsumesType ndeep (g: TcGlobals) (amap: ImportMap) m (ty1: TType) (canCoerce: CanCoerce) (ty2: TType) =
@@ -188,14 +240,14 @@ let ChooseTyparSolutionAndRange (g: TcGlobals) amap (tp:Typar) =
              match tpc with
              | TyparConstraint.CoercesTo(x, m) ->
                  join m x, m
-             | TyparConstraint.SimpleChoice(_, m) -> 
+             | TyparConstraint.SimpleChoice(_, m) ->
                  errorR(Error(FSComp.SR.typrelCannotResolveAmbiguityInPrintf(), m))
                  (maxTy, isRefined), m
              | TyparConstraint.SupportsNull m ->
                  ((addNullnessToTy KnownWithNull maxTy), isRefined), m
-             | TyparConstraint.SupportsComparison m -> 
+             | TyparConstraint.SupportsComparison m ->
                  join m g.mk_IComparable_ty, m
-             | TyparConstraint.IsEnum(_, m) -> 
+             | TyparConstraint.IsEnum(_, m) ->
                  errorR(Error(FSComp.SR.typrelCannotResolveAmbiguityInEnum(), m))
                  (maxTy, isRefined), m
              | TyparConstraint.IsDelegate(_, _, m) ->
@@ -344,10 +396,10 @@ let FindUniqueFeasibleSupertype g amap m ty1 ty2 =
     let n2 = nullnessOfTy g ty2
     let nullify t = addNullnessToTy n2 t
 
-    let supertypes = 
-        Option.toList (GetSuperTypeOfType g amap m ty2) @ 
+    let supertypes =
+        Option.toList (GetSuperTypeOfType g amap m ty2) @
         (GetImmediateInterfacesOfType SkipUnrefInterfaces.Yes g amap m ty2)
 
-    supertypes 
+    supertypes
     |> List.tryFind (TypeFeasiblySubsumesType 0 g amap m ty1 NoCoerce)
     |> Option.map nullify
