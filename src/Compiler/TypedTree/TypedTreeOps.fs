@@ -3526,11 +3526,11 @@ let IsMatchingFSharpAttributeOpt g attrOpt (Attrib(tcref2, _, _, _, _, _, _)) = 
 
 [<return: Struct>]
 let (|ExtractAttribNamedArg|_|) nm args = 
-    args |> List.tryPick (function AttribNamedArg(nm2, _, _, v) when nm = nm2 -> Some v | _ -> None) |> ValueOptionInternal.ofOption
-    
+    args |> List.tryPick (function AttribNamedArg(nm2, _, _, v) when nm = nm2 -> Some v | _ -> None) |> ValueOption.ofOption
+
 [<return: Struct>]
 let (|ExtractILAttributeNamedArg|_|) nm (args: ILAttributeNamedArg list) = 
-    args |> List.tryPick (function nm2, _, _, v when nm = nm2 -> Some v | _ -> None) |> ValueOptionInternal.ofOption
+    args |> List.tryPick (function nm2, _, _, v when nm = nm2 -> Some v | _ -> None) |> ValueOption.ofOption
 
 [<return: Struct>]
 let (|StringExpr|_|) = function Expr.Const (Const.String n, _, _) -> ValueSome n | _ -> ValueNone
@@ -8336,9 +8336,6 @@ let IsMatchingSignatureDataVersionAttr (version: ILVersionInfo) cattr =
     | _ -> 
         warning(Failure(FSComp.SR.tastUnexpectedDecodeOfInterfaceDataVersionAttribute()))
         false
-
-let mkCompilerGeneratedAttr (g: TcGlobals) n = 
-    mkILCustomAttribute (tref_CompilationMappingAttr g, [mkILNonGenericValueTy (tref_SourceConstructFlags g)], [ILAttribElem.Int32 n], [])
 
 //--------------------------------------------------------------------------
 // tupled lambda --> method/function with a given valReprInfo specification.
