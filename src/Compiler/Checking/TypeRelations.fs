@@ -112,21 +112,23 @@ type Counter(cache: System.Collections.Concurrent.ConcurrentDictionary<TTypeCach
 
     let cacheObject = WeakReference(cache)
 
-    let mutable count = 0
     let created = DateTime.Now
+    let mutable modified = DateTime.Now
 
-    member _.Increment() = Interlocked.Increment(&count)
+    member _.Touch() = modified <- DateTime.Now
     member _.Size = if cacheObject.IsAlive then (!! cacheObject.Target :?> System.Collections.Concurrent.ConcurrentDictionary<TTypeCacheKey, bool>).Count else 0
     member _.Age = DateTime.Now - created
+    member _.LastModified = DateTime.Now - modified
     member _.Alive = cacheObject.IsAlive
 
     member this.DebuggerDisplay =
         seq {
-            if this.Alive then $"Alive (%A{this.Age})"
+            if this.Alive then 
+                $"Alive (%A{this.Age})"
+                $" Last modified: {this.LastModified} ago"
             else "Dead"
             $" Size: {this.Size}"
         } |> String.concat ""
-
 
 [<DebuggerDisplay("{DebuggerDisplay}")>]
 type CacheWatch() =
@@ -134,10 +136,10 @@ type CacheWatch() =
     let caches = System.Collections.Concurrent.ConcurrentDictionary<_,_>()
     let uniqueCachesSeen = System.Collections.Concurrent.ConcurrentDictionary<_, _>()
 
-    member this.Increment (cache) =
+    member this.Touch (cache) =
         uniqueCachesSeen.GetOrAdd(cache.GetHashCode(), ())
         let counter = caches.GetOrAdd(cache.GetHashCode(), Counter(cache))
-        counter.Increment() |> ignore
+        counter.Touch() |> ignore
 
     member this.UniqueCachesSeen = uniqueCachesSeen.Count
 
@@ -164,8 +166,10 @@ let inline TryGetCachedTypeSubsumption (g: TcGlobals) (amap: ImportMap) key =
 
 let inline UpdateCachedTypeSubsumption (g: TcGlobals) (amap: ImportMap) key subsumes : unit =
     if true then
+        if not <| amap.TypeSubsumptionCache.ContainsKey(key) then 
+            cacheWatch.Touch(amap.TypeSubsumptionCache)
+        
         amap.TypeSubsumptionCache[key] <- subsumes
-        cacheWatch.Increment(amap.TypeSubsumptionCache)
 
 /// The feasible coercion relation. Part of the language spec.
 let rec TypeFeasiblySubsumesType ndeep (g: TcGlobals) (amap: ImportMap) m (ty1: TType) (canCoerce: CanCoerce) (ty2: TType) =
