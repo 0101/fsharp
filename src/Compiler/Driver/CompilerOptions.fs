@@ -1429,6 +1429,7 @@ let testFlag tcConfigB =
             | "ContinueAfterParseFailure" -> tcConfigB.continueAfterParseFailure <- true
             | "ParallelOff" -> tcConfigB.parallelParsing <- false
             | "ParallelIlxGen" -> tcConfigB.parallelIlxGen <- true // Kept as --test:.. flag for temporary backwards compatibility during .NET10 period.
+            | "TypeSubsumptionCache" -> tcConfigB.typeSubsumptionCache <- true
             | "GraphBasedChecking" -> // Kept as --test:.. flag for temporary backwards compatibility during .NET10 period.
                 tcConfigB.typeCheckingConfig <-
                     { tcConfigB.typeCheckingConfig with

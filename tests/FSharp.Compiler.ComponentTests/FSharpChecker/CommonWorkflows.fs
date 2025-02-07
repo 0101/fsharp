@@ -183,3 +183,43 @@ let ``We don't lose subsequent diagnostics when there's error in one file`` () =
         checkFile "First" (expectErrorCodes ["FS0039"])
         checkFile "Second" (expectErrorCodes ["FS0054"; "FS0365"])
     }
+
+
+[<Fact>]
+let TestOpenTk () =
+
+    let projectDir = __SOURCE_DIRECTORY__ ++ ".." ++ ".." ++ ".." ++ ".." ++ "repros" ++ "opentk"
+    let responseFile = projectDir ++ "tests" ++ "OpenTK.Tests" ++ "OpenTK.Tests.rsp"
+
+    let project = mkSyntheticProjectForResponseFile (FileInfo responseFile)
+
+    let options = "--test:TypeSubsumptionCache"::project.OtherOptions
+
+    let project = { project with OtherOptions = options }
+
+    let rng = System.Random()
+
+    let addComment s = $"{s}\n// {rng.NextDouble().ToString()}"
+    let prependSlash s = $"/{s}\n// {rng.NextDouble()}"
+
+    let modify (sourceFile: SyntheticSourceFile) =
+        { sourceFile with Source = addComment sourceFile.Source }
+
+    let break' (sourceFile: SyntheticSourceFile) =
+        { sourceFile with Source = prependSlash sourceFile.Source }
+
+    let fix (sourceFile: SyntheticSourceFile) =
+        { sourceFile with Source = sourceFile.Source.Substring 1 }
+    
+    let first = project.SourceFiles[2].Id
+    let last = project.SourceFiles[project.SourceFiles.Length - 2].Id
+
+    ProjectWorkflowBuilder(project, isExistingProject=true) {
+        updateFile first modify
+        checkFile last expectOk
+        updateFile first break'
+        checkFile first expectErrors
+        checkFile last expectErrors
+        updateFile first fix
+        checkFile last expectOk
+    }

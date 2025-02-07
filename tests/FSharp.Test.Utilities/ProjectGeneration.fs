@@ -491,6 +491,7 @@ let mkSyntheticProjectForResponseFile (responseFile: FileInfo) : SyntheticProjec
     let fsharpFileExtensions = set [| ".fs" ; ".fsi" ; ".fsx" |]
 
     let isFSharpFile (file : string) =
+        not (file.StartsWith "-") &&
         Set.exists (fun (ext : string) -> file.EndsWith (ext, StringComparison.Ordinal)) fsharpFileExtensions
           
     let fsharpFiles =
@@ -502,7 +503,7 @@ let mkSyntheticProjectForResponseFile (responseFile: FileInfo) : SyntheticProjec
 
             let fullPath = Path.Combine (responseFile.DirectoryName, line)
             if not (File.Exists fullPath) then
-                None
+                failwith $"File %s{fullPath} does not exist"
             else
                 Some fullPath
         )
@@ -1065,7 +1066,6 @@ type ProjectWorkflowBuilder
             async {
                 use _ =
                     Activity.start "ProjectWorkflowBuilder.UpdateFile" [ Activity.Tags.project, project.Name; "fileId", fileId ]
-
                 if useChangeNotifications then
                     let project, file = project.FindInAllProjects fileId
                     let filePath = project.ProjectDir ++ file.FileName

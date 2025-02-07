@@ -157,7 +157,8 @@ type internal TcGlobals =
         pathMap: Internal.Utilities.PathMap *
         langVersion: FSharp.Compiler.Features.LanguageVersion *
         realsig: bool *
-        compilationMode: CompilationMode ->
+        compilationMode: CompilationMode *
+        typeSubsumptionCache: bool ->
             TcGlobals
 
     static member IsInEmbeddableKnownSet: name: string -> bool
@@ -819,6 +820,8 @@ type internal TcGlobals =
 
     /// Are we assuming all code gen is for F# interactive, with no static linking
     member isInteractive: bool
+
+    member useTypeSubsumptionCache: bool
 
     member compilationMode: CompilationMode
 

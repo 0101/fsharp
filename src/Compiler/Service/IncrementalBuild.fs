@@ -573,7 +573,8 @@ type FrameworkImportsCache(size) =
                         tcGlobals.pathMap,
                         tcConfig.langVersion,
                         tcConfig.realsig,
-                        tcConfig.compilationMode
+                        tcConfig.compilationMode,
+                        tcConfig.typeSubsumptionCache
                     )
 
             else

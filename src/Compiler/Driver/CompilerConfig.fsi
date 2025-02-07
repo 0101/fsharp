@@ -439,6 +439,8 @@ type TcConfigBuilder =
 
         mutable parallelIlxGen: bool
 
+        mutable typeSubsumptionCache: bool
+
         mutable emitMetadataAssembly: MetadataAssemblyGeneration
 
         mutable preferredUiLang: string option
@@ -774,6 +776,8 @@ type TcConfig =
     member parallelParsing: bool
 
     member parallelIlxGen: bool
+
+    member typeSubsumptionCache: bool
 
     member emitMetadataAssembly: MetadataAssemblyGeneration
 

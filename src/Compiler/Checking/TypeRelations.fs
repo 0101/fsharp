@@ -155,7 +155,7 @@ let cacheWatch = CacheWatch()
 
 
 let inline TryGetCachedTypeSubsumption (g: TcGlobals) (amap: ImportMap) key =
-    if true then
+    if g.useTypeSubsumptionCache then
         match amap.TypeSubsumptionCache.TryGetValue(key) with
         | true, subsumes ->
             ValueSome subsumes
@@ -165,7 +165,7 @@ let inline TryGetCachedTypeSubsumption (g: TcGlobals) (amap: ImportMap) key =
         ValueNone
 
 let inline UpdateCachedTypeSubsumption (g: TcGlobals) (amap: ImportMap) key subsumes : unit =
-    if true then
+    if g.useTypeSubsumptionCache then
         if not <| amap.TypeSubsumptionCache.ContainsKey(key) then 
             cacheWatch.Touch(amap.TypeSubsumptionCache)
         

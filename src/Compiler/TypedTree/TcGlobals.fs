@@ -198,7 +198,8 @@ type TcGlobals(
     pathMap: PathMap,
     langVersion: LanguageVersion,
     realsig: bool,
-    compilationMode: CompilationMode) =
+    compilationMode: CompilationMode,
+    typeSubsumptionCache: bool) =
 
   let v_langFeatureNullness = langVersion.SupportsFeature LanguageFeature.NullnessChecking
 
@@ -1839,6 +1840,8 @@ type TcGlobals(
 
   /// Are we assuming all code gen is for F# interactive, with no static linking
   member _.isInteractive=isInteractive
+
+  member _.useTypeSubsumptionCache = typeSubsumptionCache
 
   member val compilationMode = compilationMode
 

@@ -426,3 +426,84 @@ type TransparentCompilerGiraffeBenchmark() =
             checkFile "Streaming" expectOk
             checkFile "EndpointRouting" expectOk
         }
+
+
+[<MemoryDiagnoser>]
+[<ThreadingDiagnoser>]
+[<SimpleJob(warmupCount=1,iterationCount=1)>]
+type SubsumptionCacheTests() =
+
+    let mutable benchmark : ProjectWorkflowBuilder = Unchecked.defaultof<_>
+
+    let rng = System.Random()
+
+    let addComment s = $"{s}\n// {rng.NextDouble().ToString()}"
+    let prependSlash s = $"/{s}\n// {rng.NextDouble()}"
+
+    let modify (sourceFile: SyntheticSourceFile) =
+        { sourceFile with Source = addComment sourceFile.Source }
+
+    let break' (sourceFile: SyntheticSourceFile) =
+        { sourceFile with Source = prependSlash sourceFile.Source }
+
+    let fix (sourceFile: SyntheticSourceFile) =
+        { sourceFile with Source = sourceFile.Source.Substring 1 }
+
+    let iterations = 8
+
+    [<ParamsAllValues>]
+    member val UseTransparentCompiler = true with get,set
+
+    [<ParamsAllValues>]
+    member val UseSubsumptionCache = true with get,set
+
+    member this.Iterations = if not this.UseSubsumptionCache then 1 else iterations
+
+    member this.Project =
+        let projectDir = __SOURCE_DIRECTORY__ ++ ".." ++ ".." ++ ".." ++ ".." ++ ".." ++ "repros" ++ "opentk"
+        let responseFile = projectDir ++ "tests" ++ "OpenTK.Tests" ++ "OpenTK.Tests.rsp"
+
+        let project = mkSyntheticProjectForResponseFile (FileInfo responseFile)
+
+        let options = if this.UseSubsumptionCache then "--test:TypeSubsumptionCache"::project.OtherOptions else project.OtherOptions
+
+        { project with OtherOptions = options }
+
+    [<GlobalSetup>]
+    member this.Setup() =
+        benchmark <-
+            ProjectWorkflowBuilder(
+            this.Project,
+            useGetSource = true,
+            useChangeNotifications = true,
+            useTransparentCompiler = this.UseTransparentCompiler,
+            runTimeout = 900_000).CreateBenchmarkBuilder()
+
+    [<Benchmark>]
+    member this.EditingLoop() =
+
+        use _ = Activity.start "Benchmark" [
+            "UseTransparentCompiler", this.UseTransparentCompiler.ToString()
+            "UseSubsumptionCache", this.UseSubsumptionCache.ToString()
+        ]
+
+        let first = this.Project.SourceFiles[2].Id
+        let last = this.Project.SourceFiles[this.Project.SourceFiles.Length - 2].Id
+
+        let mutable ctx = benchmark.Yield()
+
+        for _i in 1..iterations do
+            let ctx1 = benchmark.UpdateFile(ctx, first, modify)
+            ctx <- benchmark.CheckFile(ctx1, last, expectOk)
+
+        benchmark.Run(ctx) |> Async.RunSynchronously |> ignore
+
+        //benchmark {
+        //    updateFile first modify
+        //    checkFile last expectOk
+        //    updateFile first break'
+        //    checkFile first expectErrors
+        //    checkFile last expectErrors
+        //    updateFile first fix
+        //    checkFile last expectOk
+        //}

@@ -2616,7 +2616,8 @@ and [<Sealed>] TcImports
                     tcConfig.pathMap,
                     tcConfig.langVersion,
                     tcConfig.realsig,
-                    tcConfig.compilationMode
+                    tcConfig.compilationMode,
+                    tcConfig.typeSubsumptionCache
                 )
 
 #if DEBUG

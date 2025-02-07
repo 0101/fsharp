@@ -568,6 +568,7 @@ type TcConfigBuilder =
         mutable deterministic: bool
         mutable parallelParsing: bool
         mutable parallelIlxGen: bool
+        mutable typeSubsumptionCache: bool
         mutable emitMetadataAssembly: MetadataAssemblyGeneration
         mutable preferredUiLang: string option
         mutable lcid: int option
@@ -819,6 +820,7 @@ type TcConfigBuilder =
             deterministic = false
             parallelParsing = true
             parallelIlxGen = FSharpExperimentalFeaturesEnabledAutomatically
+            typeSubsumptionCache = false
             emitMetadataAssembly = MetadataAssemblyGeneration.None
             preferredUiLang = None
             lcid = None
@@ -1382,6 +1384,7 @@ type TcConfig private (data: TcConfigBuilder, validate: bool) =
     member _.deterministic = data.deterministic
     member _.parallelParsing = data.parallelParsing
     member _.parallelIlxGen = data.parallelIlxGen
+    member _.typeSubsumptionCache = data.typeSubsumptionCache
     member _.emitMetadataAssembly = data.emitMetadataAssembly
     member _.pathMap = data.pathMap
     member _.langVersion = data.langVersion
