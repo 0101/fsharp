@@ -161,10 +161,10 @@ let ``We don't lose subsequent diagnostics when there's error in one file`` () =
     let project =
         { SyntheticProject.Create(
             { sourceFile "First" [] with
-                Source = """module AbstractBaseClass.File1 
-                
+                Source = """module AbstractBaseClass.File1
+
                 let foo x = ()
-                
+
                 a""" },
             { sourceFile "Second" [] with
                 Source = """module AbstractBaseClass.File2
@@ -178,7 +178,7 @@ let ``We don't lose subsequent diagnostics when there's error in one file`` () =
                     abstract P: int""" }) with
             AutoAddModules = false
             SkipInitialCheck = true }
-                
+
     project.Workflow {
         checkFile "First" (expectErrorCodes ["FS0039"])
         checkFile "Second" (expectErrorCodes ["FS0054"; "FS0365"])
@@ -190,12 +190,17 @@ let TestOpenTk () =
 
     let projectDir = __SOURCE_DIRECTORY__ ++ ".." ++ ".." ++ ".." ++ ".." ++ "repros" ++ "opentk"
     let responseFile = projectDir ++ "tests" ++ "OpenTK.Tests" ++ "OpenTK.Tests.rsp"
+    let responseFile2 = projectDir ++ "tests" ++ "OpenTK.Tests.Integration" ++ "OpenTK.Tests.Integration.rsp"
 
-    let project = mkSyntheticProjectForResponseFile (FileInfo responseFile)
+    let project1 = mkSyntheticProjectForResponseFile (FileInfo responseFile)
 
-    let options = "--test:TypeSubsumptionCache"::project.OtherOptions
+    let useTSCache = "--test:TypeSubsumptionCache"
 
-    let project = { project with OtherOptions = options }
+    let project1 = { project1 with OtherOptions = useTSCache::project1.OtherOptions }
+
+    let project2 = mkSyntheticProjectForResponseFile (FileInfo responseFile2)
+
+    let project2 = { project2 with OtherOptions = useTSCache::project2.OtherOptions ; DependsOn = [project1] }
 
     let rng = System.Random()
 
@@ -210,16 +215,24 @@ let TestOpenTk () =
 
     let fix (sourceFile: SyntheticSourceFile) =
         { sourceFile with Source = sourceFile.Source.Substring 1 }
-    
-    let first = project.SourceFiles[2].Id
-    let last = project.SourceFiles[project.SourceFiles.Length - 2].Id
 
-    ProjectWorkflowBuilder(project, isExistingProject=true) {
+    let first = project1.SourceFiles[2].Id
+    let last = project1.SourceFiles[project1.SourceFiles.Length - 2].Id
+
+    let project2File = project2.SourceFiles[2].Id
+
+
+    ProjectWorkflowBuilder(project2, isExistingProject=true) {
         updateFile first modify
         checkFile last expectOk
         updateFile first break'
         checkFile first expectErrors
         checkFile last expectErrors
+
+        checkFile project2File expectErrors
+
         updateFile first fix
         checkFile last expectOk
+
+        checkFile project2File expectOk
     }
