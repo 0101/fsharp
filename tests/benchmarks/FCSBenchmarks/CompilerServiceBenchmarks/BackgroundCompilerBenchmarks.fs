@@ -8,6 +8,7 @@ open FSharp.Compiler.Diagnostics
 open FSharp.Test.ProjectGeneration
 open BenchmarkDotNet.Engines
 open FSharp.Benchmarks.Common.Categories
+open BenchmarkDotNet.Diagnostics.Windows.Configs
 
 [<MemoryDiagnoser>]
 [<BenchmarkCategory(LongCategory)>]
@@ -430,6 +431,7 @@ type TransparentCompilerGiraffeBenchmark() =
 
 [<MemoryDiagnoser>]
 [<ThreadingDiagnoser>]
+[<EtwProfiler>]
 [<SimpleJob(warmupCount=1,iterationCount=1)>]
 type SubsumptionCacheTests() =
 
