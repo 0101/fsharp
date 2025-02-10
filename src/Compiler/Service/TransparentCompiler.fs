@@ -1877,8 +1877,9 @@ type internal TransparentCompiler
                     // Until that sequence happens the project will be used from disk (if available).
                     // To get around it we probably need to detect changes made in the editor and record a timestamp for them.
                     let shouldUseOnDisk =
-                        availableOnDiskModifiedTime
-                        |> Option.exists (fun t -> t >= projectSnapshot.GetLastModifiedTimeOnDisk())
+                        false
+                        //availableOnDiskModifiedTime
+                        //|> Option.exists (fun t -> t >= projectSnapshot.GetLastModifiedTimeOnDisk())
 
                     let name = projectSnapshot.ProjectFileName |> Path.GetFileNameWithoutExtension
 

@@ -1128,7 +1128,7 @@ type ProjectWorkflowBuilder
                 use _ = Activity.start "ProjectWorkflowBuilder.CheckFile" [ Activity.Tags.project, initialProject.Name; "fileId", fileId ]
                 checkFile fileId ctx.Project checker
 
-            let oldSignature = ctx.Signatures[fileId]
+            let oldSignature = ctx.Signatures |> Map.tryFind fileId |> Option.defaultValue "N/A"
             let newSignature = getSignature results
 
             processResults results (oldSignature, newSignature)
