@@ -107,52 +107,51 @@ let TypesFeasiblyEquivStripMeasures g amap m ty1 ty2 =
     TypesFeasiblyEquivalent true 0 g amap m ty1 ty2
 
 
-[<DebuggerDisplay("{DebuggerDisplay}")>]
-type Counter(cache: System.Collections.Concurrent.ConcurrentDictionary<TTypeCacheKey, bool>) =
+//[<DebuggerDisplay("{DebuggerDisplay}")>]
+//type Counter(cache: System.Collections.Concurrent.ConcurrentDictionary<TTypeCacheKey, bool>) =
 
-    let cacheObject = WeakReference(cache)
+//    let cacheObject = WeakReference(cache)
 
-    let created = DateTime.Now
-    let mutable modified = DateTime.Now
+//    let created = DateTime.Now
+//    let mutable modified = DateTime.Now
 
-    member _.Touch() = modified <- DateTime.Now
-    member _.Size = if cacheObject.IsAlive then (!! cacheObject.Target :?> System.Collections.Concurrent.ConcurrentDictionary<TTypeCacheKey, bool>).Count else 0
-    member _.Age = DateTime.Now - created
-    member _.LastModified = DateTime.Now - modified
-    member _.Alive = cacheObject.IsAlive
+//    member _.Touch() = modified <- DateTime.Now
+//    member _.Size = if cacheObject.IsAlive then (!! cacheObject.Target :?> System.Collections.Concurrent.ConcurrentDictionary<TTypeCacheKey, bool>).Count else 0
+//    member _.Age = DateTime.Now - created
+//    member _.LastModified = DateTime.Now - modified
+//    member _.Alive = cacheObject.IsAlive
 
-    member this.DebuggerDisplay =
-        seq {
-            if this.Alive then 
-                $"Alive (%A{this.Age})"
-                $" Last modified: {this.LastModified} ago"
-            else "Dead"
-            $" Size: {this.Size}"
-        } |> String.concat ""
+//    member this.DebuggerDisplay =
+//        seq {
+//            if this.Alive then
+//                $"Alive (%A{this.Age})"
+//                $" Last modified: {this.LastModified} ago"
+//            else "Dead"
+//            $" Size: {this.Size}"
+//        } |> String.concat ""
 
-[<DebuggerDisplay("{DebuggerDisplay}")>]
-type CacheWatch() =
+//[<DebuggerDisplay("{DebuggerDisplay}")>]
+//type CacheWatch() =
 
-    let caches = System.Collections.Concurrent.ConcurrentDictionary<_,_>()
-    let uniqueCachesSeen = System.Collections.Concurrent.ConcurrentDictionary<_, _>()
+//    let caches = System.Collections.Concurrent.ConcurrentDictionary<_,_>()
+//    let uniqueCachesSeen = System.Collections.Concurrent.ConcurrentDictionary<_, _>()
 
-    member this.Touch (cache) =
-        uniqueCachesSeen.GetOrAdd(cache.GetHashCode(), ())
-        let counter = caches.GetOrAdd(cache.GetHashCode(), Counter(cache))
-        counter.Touch() |> ignore
+//    member this.Touch (cache) =
+//        uniqueCachesSeen.GetOrAdd(cache.GetHashCode(), ())
+//        let counter = caches.GetOrAdd(cache.GetHashCode(), Counter(cache))
+//        counter.Touch() |> ignore
 
-    member this.UniqueCachesSeen = uniqueCachesSeen.Count
+//    member this.UniqueCachesSeen = uniqueCachesSeen.Count
 
-    member this.DebuggerDisplay =
+//    member this.DebuggerDisplay =
 
-        let alive, dead = caches.Values |> Seq.toList |> List.partition _.Alive
-        let aliveCounts = alive |> List.sumBy _.Size
+//        let alive, dead = caches.Values |> Seq.toList |> List.partition _.Alive
+//        let aliveCounts = alive |> List.sumBy _.Size
 
-        $"Alive: {alive.Length} Total entries: {aliveCounts} Dead: {dead.Length}"
+//        $"Alive: {alive.Length} Total entries: {aliveCounts} Dead: {dead.Length}"
 
 
-let cacheWatch = CacheWatch()
-
+//let cacheWatch = CacheWatch()
 
 let inline TryGetCachedTypeSubsumption (g: TcGlobals) (amap: ImportMap) key =
     if g.useTypeSubsumptionCache then
@@ -166,9 +165,9 @@ let inline TryGetCachedTypeSubsumption (g: TcGlobals) (amap: ImportMap) key =
 
 let inline UpdateCachedTypeSubsumption (g: TcGlobals) (amap: ImportMap) key subsumes : unit =
     if g.useTypeSubsumptionCache then
-        if not <| amap.TypeSubsumptionCache.ContainsKey(key) then 
-            cacheWatch.Touch(amap.TypeSubsumptionCache)
-        
+        //if not <| amap.TypeSubsumptionCache.ContainsKey(key) then
+        //    cacheWatch.Touch(amap.TypeSubsumptionCache)
+
         amap.TypeSubsumptionCache[key] <- subsumes
 
 /// The feasible coercion relation. Part of the language spec.

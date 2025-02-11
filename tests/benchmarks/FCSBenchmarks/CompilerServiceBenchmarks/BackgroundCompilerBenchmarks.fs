@@ -451,7 +451,9 @@ type SubsumptionCacheTests() =
     let fix (sourceFile: SyntheticSourceFile) =
         { sourceFile with Source = sourceFile.Source.Substring 1 }
 
-    let iterations = 8
+    let iterations = 1
+
+    let projectDir = __SOURCE_DIRECTORY__ ++ ".." ++ ".." ++ ".." ++ ".." ++ ".." ++ "repros" ++ "opentk"
 
     [<ParamsAllValues>]
     member val UseTransparentCompiler = true with get,set
@@ -461,8 +463,7 @@ type SubsumptionCacheTests() =
 
     member this.Iterations = if not this.UseSubsumptionCache then 1 else iterations
 
-    member this.Project =
-        let projectDir = __SOURCE_DIRECTORY__ ++ ".." ++ ".." ++ ".." ++ ".." ++ ".." ++ "repros" ++ "opentk"
+    member this.Project1 =
         let responseFile = projectDir ++ "tests" ++ "OpenTK.Tests" ++ "OpenTK.Tests.rsp"
 
         let project = mkSyntheticProjectForResponseFile (FileInfo responseFile)
@@ -471,11 +472,21 @@ type SubsumptionCacheTests() =
 
         { project with OtherOptions = options }
 
+    member this.Project2 =
+        let responseFile2 = projectDir ++ "tests" ++ "OpenTK.Tests.Integration" ++ "OpenTK.Tests.Integration.rsp"
+
+        let project = mkSyntheticProjectForResponseFile (FileInfo responseFile2)
+
+        let options = if this.UseSubsumptionCache then "--test:TypeSubsumptionCache"::project.OtherOptions else project.OtherOptions
+        { project with OtherOptions = options; DependsOn = [this.Project1] }
+
+
     [<GlobalSetup>]
     member this.Setup() =
         benchmark <-
             ProjectWorkflowBuilder(
-            this.Project,
+            this.Project2,
+            isExistingProject = true,
             useGetSource = true,
             useChangeNotifications = true,
             useTransparentCompiler = this.UseTransparentCompiler,
@@ -489,23 +500,31 @@ type SubsumptionCacheTests() =
             "UseSubsumptionCache", this.UseSubsumptionCache.ToString()
         ]
 
-        let first = this.Project.SourceFiles[2].Id
-        let last = this.Project.SourceFiles[this.Project.SourceFiles.Length - 2].Id
+        let first = this.Project1.SourceFiles[2].Id
+        let last = this.Project1.SourceFiles[this.Project1.SourceFiles.Length - 2].Id
 
-        let mutable ctx = benchmark.Yield()
+        let project2File = this.Project2.SourceFiles[2].Id
 
-        for _i in 1..iterations do
-            let ctx1 = benchmark.UpdateFile(ctx, first, modify)
-            ctx <- benchmark.CheckFile(ctx1, last, expectOk)
+        //let mutable ctx = benchmark.Yield()
 
-        benchmark.Run(ctx) |> Async.RunSynchronously |> ignore
+        //for _i in 1..iterations do
+        //    let ctx1 = benchmark.UpdateFile(ctx, first, modify)
 
-        //benchmark {
-        //    updateFile first modify
-        //    checkFile last expectOk
-        //    updateFile first break'
-        //    checkFile first expectErrors
-        //    checkFile last expectErrors
-        //    updateFile first fix
-        //    checkFile last expectOk
-        //}
+        //    ctx <- benchmark.CheckFile(ctx1, last, expectOk)
+
+        //benchmark.Run(ctx) |> Async.RunSynchronously |> ignore
+
+        benchmark {
+            updateFile first modify
+            checkFile last expectOk
+            updateFile first break'
+            checkFile first expectErrors
+            checkFile last expectErrors
+
+            checkFile project2File expectErrors
+
+            updateFile first fix
+            checkFile last expectOk
+
+            checkFile project2File expectOk
+        }

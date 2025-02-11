@@ -221,7 +221,6 @@ let TestOpenTk () =
 
     let project2File = project2.SourceFiles[2].Id
 
-
     ProjectWorkflowBuilder(project2, isExistingProject=true) {
         updateFile first modify
         checkFile last expectOk
