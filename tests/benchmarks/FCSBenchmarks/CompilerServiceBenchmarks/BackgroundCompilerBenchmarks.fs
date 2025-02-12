@@ -431,7 +431,9 @@ type TransparentCompilerGiraffeBenchmark() =
 
 [<MemoryDiagnoser>]
 [<ThreadingDiagnoser>]
+#if !DEBUG
 [<EtwProfiler>]
+#endif
 [<SimpleJob(warmupCount=1,iterationCount=1)>]
 type SubsumptionCacheTests() =
 
@@ -540,9 +542,14 @@ module MyModule =
 
         let mutable ctx = benchmark.Yield()
         ctx <- benchmark.UpdateFile(ctx, project2File, addNewTypeToProject2File)
+        //ctx <- benchmark.CheckFile(ctx, project2File, expectErrors) // referenced type not added to first file
 
         for _i in 1..iterations do
             ctx <- benchmark.UpdateFile(ctx, first, addNewTypeToFirst)
+            ctx <- benchmark.UpdateFile(ctx, first, break')
+            ctx <- benchmark.CheckFile(ctx, first, expectErrors)
+            ctx <- benchmark.CheckFile(ctx, project2File, expectErrors)
+            ctx <- benchmark.UpdateFile(ctx, first, fix)
             ctx <- benchmark.CheckFile(ctx, first, expectOk)
             ctx <- benchmark.CheckFile(ctx, project2File, expectOk)
 
@@ -599,6 +606,9 @@ module MyModule =
 
         for _i in 1..iterations do
             ctx <- benchmark.UpdateFile(ctx, project2File, addNewTypeToProject2File)
+            ctx <- benchmark.UpdateFile(ctx, project2File, break')
+            ctx <- benchmark.CheckFile(ctx, project2File, expectErrors)
+            ctx <- benchmark.UpdateFile(ctx, project2File, fix)
             ctx <- benchmark.CheckFile(ctx, project2File, expectOk)
 
         benchmark.Run(ctx) |> Async.RunSynchronously |> ignore
