@@ -207,7 +207,7 @@ let TestOpenTk () =
     let addComment s = $"{s}\n// {rng.NextDouble().ToString()}"
     let prependSlash s = $"/{s}\n// {rng.NextDouble()}"
 
-    let modify (sourceFile: SyntheticSourceFile) =
+    let _modify (sourceFile: SyntheticSourceFile) =
         { sourceFile with Source = addComment sourceFile.Source }
 
     let break' (sourceFile: SyntheticSourceFile) =
@@ -217,17 +217,47 @@ let TestOpenTk () =
         { sourceFile with Source = sourceFile.Source.Substring 1 }
 
     let first = project1.SourceFiles[2].Id
+    let firstOriginalSource = project1.SourceFiles[2].Source
+
+    let firstNewTypeDef n = $"""
+type MyType{n}() =
+    member val Field{n} = {n}
+    interface IEquatable<MyType{n}> with
+        member this.Equals(other) = false
+
+type MyType = MyType{n}
+"""
+
+    let addNewTypeToFirst (sourceFile: SyntheticSourceFile) =
+        { sourceFile with Source = firstOriginalSource + (firstNewTypeDef (rng.Next(0, 9000))) }
+
     let last = project1.SourceFiles[project1.SourceFiles.Length - 2].Id
 
     let project2File = project2.SourceFiles[2].Id
+    let project2FileOriginalSource = project2.SourceFiles[2].Source
+
+    let project2FileNewTypeDef n = $"""
+type MyOtherType{n}() =
+    inherit MyType()
+    member this.MyMethod() = 1
+
+module MyModule =
+
+    let doSomething x =
+        x = MyOtherType{n}()
+"""
+
+    let addNewTypeToProject2File (sourceFile: SyntheticSourceFile) =
+        { sourceFile with Source = project2FileOriginalSource + (project2FileNewTypeDef (rng.Next(0, 9000))) }
 
     ProjectWorkflowBuilder(project2, isExistingProject=true) {
-        updateFile first modify
+        updateFile first addNewTypeToFirst
         checkFile last expectOk
         updateFile first break'
         checkFile first expectErrors
         checkFile last expectErrors
 
+        updateFile project2File addNewTypeToProject2File
         checkFile project2File expectErrors
 
         updateFile first fix

@@ -458,7 +458,7 @@ type SubsumptionCacheTests() =
     [<ParamsAllValues>]
     member val UseTransparentCompiler = true with get,set
 
-    [<ParamsAllValues>]
+    //[<ParamsAllValues>]
     member val UseSubsumptionCache = true with get,set
 
     member this.Iterations = if not this.UseSubsumptionCache then 1 else iterations
@@ -481,6 +481,7 @@ type SubsumptionCacheTests() =
         { project with OtherOptions = options; DependsOn = [this.Project1] }
 
 
+
     [<GlobalSetup>]
     member this.Setup() =
         benchmark <-
@@ -493,38 +494,111 @@ type SubsumptionCacheTests() =
             runTimeout = 900_000).CreateBenchmarkBuilder()
 
     [<Benchmark>]
-    member this.EditingLoop() =
+    member this.EditingRootProject() =
 
         use _ = Activity.start "Benchmark" [
             "UseTransparentCompiler", this.UseTransparentCompiler.ToString()
             "UseSubsumptionCache", this.UseSubsumptionCache.ToString()
         ]
 
-        let first = this.Project1.SourceFiles[2].Id
-        let last = this.Project1.SourceFiles[this.Project1.SourceFiles.Length - 2].Id
+        let project1 = this.Project1
+        let project2 = this.Project2
 
-        let project2File = this.Project2.SourceFiles[2].Id
+        let first = project1.SourceFiles[2].Id
+        let firstOriginalSource = project1.SourceFiles[2].Source
 
-        //let mutable ctx = benchmark.Yield()
+        let firstNewTypeDef n = $"""
+type MyType{n}() =
+    member val Field{n} = {n}
+    interface IEquatable<MyType{n}> with
+        member this.Equals(other) = false
 
-        //for _i in 1..iterations do
-        //    let ctx1 = benchmark.UpdateFile(ctx, first, modify)
+type MyType = MyType{n}
+"""
 
-        //    ctx <- benchmark.CheckFile(ctx1, last, expectOk)
+        let addNewTypeToFirst (sourceFile: SyntheticSourceFile) =
+            { sourceFile with Source = firstOriginalSource + (firstNewTypeDef (rng.Next(0, 9000))) }
 
-        //benchmark.Run(ctx) |> Async.RunSynchronously |> ignore
+        let last = project1.SourceFiles[project1.SourceFiles.Length - 2].Id
 
-        benchmark {
-            updateFile first modify
-            checkFile last expectOk
-            updateFile first break'
-            checkFile first expectErrors
-            checkFile last expectErrors
+        let project2File = project2.SourceFiles[2].Id
+        let project2FileOriginalSource = project2.SourceFiles[2].Source
 
-            checkFile project2File expectErrors
+        let project2FileNewTypeDef n = $"""
+type MyOtherType{n}() =
+    inherit MyType()
+    member this.MyMethod() = 1
 
-            updateFile first fix
-            checkFile last expectOk
+module MyModule =
 
-            checkFile project2File expectOk
-        }
+    let doSomething x =
+        x = MyOtherType{n}()
+"""
+
+        let addNewTypeToProject2File (sourceFile: SyntheticSourceFile) =
+            { sourceFile with Source = project2FileOriginalSource + (project2FileNewTypeDef (rng.Next(0, 9000))) }
+
+        let mutable ctx = benchmark.Yield()
+        ctx <- benchmark.UpdateFile(ctx, project2File, addNewTypeToProject2File)
+
+        for _i in 1..iterations do
+            ctx <- benchmark.UpdateFile(ctx, first, addNewTypeToFirst)
+            ctx <- benchmark.CheckFile(ctx, first, expectOk)
+            ctx <- benchmark.CheckFile(ctx, project2File, expectOk)
+
+        benchmark.Run(ctx) |> Async.RunSynchronously |> ignore
+
+    [<Benchmark>]
+    member this.EditingLeafProject() =
+
+        use _ = Activity.start "Benchmark" [
+            "UseTransparentCompiler", this.UseTransparentCompiler.ToString()
+            "UseSubsumptionCache", this.UseSubsumptionCache.ToString()
+        ]
+
+        let project1 = this.Project1
+        let project2 = this.Project2
+
+        let first = project1.SourceFiles[2].Id
+        let firstOriginalSource = project1.SourceFiles[2].Source
+
+        let firstNewTypeDef n = $"""
+type MyType{n}() =
+    member val Field{n} = {n}
+    interface IEquatable<MyType{n}> with
+        member this.Equals(other) = false
+
+type MyType = MyType{n}
+"""
+
+        let addNewTypeToFirst (sourceFile: SyntheticSourceFile) =
+            { sourceFile with Source = firstOriginalSource + (firstNewTypeDef (rng.Next(0, 9000))) }
+
+        let last = project1.SourceFiles[project1.SourceFiles.Length - 2].Id
+
+        let project2File = project2.SourceFiles[2].Id
+        let project2FileOriginalSource = project2.SourceFiles[2].Source
+
+        let project2FileNewTypeDef n = $"""
+type MyOtherType{n}() =
+    inherit MyType()
+    member this.MyMethod() = 1
+
+module MyModule =
+
+    let doSomething x =
+        x = MyOtherType{n}()
+"""
+
+        let addNewTypeToProject2File (sourceFile: SyntheticSourceFile) =
+            { sourceFile with Source = project2FileOriginalSource + (project2FileNewTypeDef (rng.Next(0, 9000))) }
+
+        let mutable ctx = benchmark.Yield()
+        ctx <- benchmark.UpdateFile(ctx, first, addNewTypeToFirst)
+        ctx <- benchmark.CheckFile(ctx, first, expectOk)
+
+        for _i in 1..iterations do
+            ctx <- benchmark.UpdateFile(ctx, project2File, addNewTypeToProject2File)
+            ctx <- benchmark.CheckFile(ctx, project2File, expectOk)
+
+        benchmark.Run(ctx) |> Async.RunSynchronously |> ignore
