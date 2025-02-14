@@ -354,7 +354,7 @@ type TransparentCompilerGiraffeBenchmark() =
     member val UseTransparentCompiler = true with get,set
 
     [<ParamsAllValues>]
-    member val SignatureFiles = true with get,set
+    member val SignatureFiles = false with get,set
 
     member this.Project =
         let projectDir = if this.SignatureFiles then "Giraffe-signatures" else "Giraffe"
@@ -372,7 +372,7 @@ type TransparentCompilerGiraffeBenchmark() =
             useTransparentCompiler = this.UseTransparentCompiler,
             runTimeout = 15_000).CreateBenchmarkBuilder()
 
-    //[<Benchmark>]
+    [<Benchmark>]
     member this.ChangeFirstCheckLast() =
 
         use _ = Activity.start "Benchmark" [
@@ -431,27 +431,186 @@ type TransparentCompilerGiraffeBenchmark() =
 
 [<MemoryDiagnoser>]
 [<ThreadingDiagnoser>]
-#if !DEBUG
-[<EtwProfiler>]
-#endif
+//#if !DEBUG
+//[<EtwProfiler>]
+//#endif
 [<SimpleJob(warmupCount=1,iterationCount=1)>]
-type SubsumptionCacheTests() =
+type SubsumptionCacheTestsWithRegularProject() =
 
     let mutable benchmark : ProjectWorkflowBuilder = Unchecked.defaultof<_>
 
-    let rng = System.Random()
+    let iterations = 50
 
-    let addComment s = $"{s}\n// {rng.NextDouble().ToString()}"
-    let prependSlash s = $"/{s}\n// {rng.NextDouble()}"
+    let projectDir = __SOURCE_DIRECTORY__ ++ ".." ++ ".." ++ ".." ++ ".." ++ ".." ++ "Giraffe"
 
-    let modify (sourceFile: SyntheticSourceFile) =
-        { sourceFile with Source = addComment sourceFile.Source }
+    [<ParamsAllValues>]
+    member val UseTransparentCompiler = true with get,set
 
-    let break' (sourceFile: SyntheticSourceFile) =
-        { sourceFile with Source = prependSlash sourceFile.Source }
+    [<ParamsAllValues>]
+    member val UseSubsumptionCache = true with get,set
 
-    let fix (sourceFile: SyntheticSourceFile) =
-        { sourceFile with Source = sourceFile.Source.Substring 1 }
+    //member this.Iterations = if not this.UseSubsumptionCache then 1 else iterations
+
+    member this.Project1 =
+        let responseFile = projectDir ++ "src" ++ "Giraffe" ++ "Giraffe.rsp"
+
+        let project = mkSyntheticProjectForResponseFile (FileInfo responseFile)
+
+        let options = if this.UseSubsumptionCache then "--test:TypeSubsumptionCache"::project.OtherOptions else project.OtherOptions
+
+        { project with OtherOptions = options }
+
+    member this.Project2 =
+        let responseFile2 = projectDir ++ "tests" ++ "Giraffe.Tests" ++ "Giraffe.Tests.rsp"
+
+        let project = mkSyntheticProjectForResponseFile (FileInfo responseFile2)
+
+        let options = if this.UseSubsumptionCache then "--test:TypeSubsumptionCache"::project.OtherOptions else project.OtherOptions
+        { project with OtherOptions = options; DependsOn = [this.Project1] }
+
+    [<GlobalSetup>]
+    member this.Setup() =
+        benchmark <-
+            ProjectWorkflowBuilder(
+            this.Project2,
+            isExistingProject = true,
+            useGetSource = true,
+            useChangeNotifications = true,
+            useTransparentCompiler = this.UseTransparentCompiler,
+            runTimeout = 900_000).CreateBenchmarkBuilder()
+
+    [<Benchmark>]
+    member this.EditingRootProject() =
+
+        use _ = Activity.start "Benchmark" [
+            "UseTransparentCompiler", this.UseTransparentCompiler.ToString()
+            "UseSubsumptionCache", this.UseSubsumptionCache.ToString()
+        ]
+
+        let project1 = this.Project1
+        let project2 = this.Project2
+
+        let first = project1.SourceFiles[2].Id
+        let firstOriginalSource = project1.SourceFiles[2].Source
+
+        let firstNewTypeDef n = $"""
+open System
+
+type MyType{n}() =
+    member val Field{n} = {n}
+    interface IEquatable<MyType{n}> with
+        member this.Equals(other) = false
+
+type MyType = MyType{n}
+"""
+
+        let addNewTypeToFirst (sourceFile: SyntheticSourceFile) =
+            { sourceFile with Source = firstOriginalSource + (firstNewTypeDef (rng.Next(0, 9000))) }
+
+        let last = project1.SourceFiles[project1.SourceFiles.Length - 2].Id
+
+        let project2File = project2.SourceFiles[10].Id
+        let project2FileOriginalSource = project2.SourceFiles[10].Source
+
+        let project2FileNewTypeDef n = $"""
+type MyOtherType{n}() =
+    inherit MyType()
+    member this.MyMethod() = 1
+
+module MyModule =
+
+    let doSomething x =
+        x = MyOtherType{n}()
+"""
+
+        let addNewTypeToProject2File (sourceFile: SyntheticSourceFile) =
+            { sourceFile with Source = project2FileOriginalSource + (project2FileNewTypeDef (rng.Next(0, 9000))) }
+
+        let mutable ctx = benchmark.Yield()
+        ctx <- benchmark.UpdateFile(ctx, project2File, addNewTypeToProject2File)
+        //ctx <- benchmark.CheckFile(ctx, project2File, expectErrors) // referenced type not added to first file
+
+        for _i in 1..iterations do
+            ctx <- benchmark.UpdateFile(ctx, first, addNewTypeToFirst)
+            ctx <- benchmark.UpdateFile(ctx, first, break')
+            ctx <- benchmark.CheckFile(ctx, first, expectErrors)
+            ctx <- benchmark.CheckFile(ctx, project2File, expectErrors)
+            ctx <- benchmark.UpdateFile(ctx, first, fix)
+            ctx <- benchmark.CheckFile(ctx, first, expectOk)
+            ctx <- benchmark.CheckFile(ctx, project2File, expectOk)
+
+        benchmark.Run(ctx) |> Async.RunSynchronously |> ignore
+
+    [<Benchmark>]
+    member this.EditingLeafProject() =
+
+        use _ = Activity.start "Benchmark" [
+            "UseTransparentCompiler", this.UseTransparentCompiler.ToString()
+            "UseSubsumptionCache", this.UseSubsumptionCache.ToString()
+        ]
+
+        let project1 = this.Project1
+        let project2 = this.Project2
+
+        let first = project1.SourceFiles[2].Id
+        let firstOriginalSource = project1.SourceFiles[2].Source
+
+        let firstNewTypeDef n = $"""
+open System
+
+type MyType{n}() =
+    member val Field{n} = {n}
+    interface IEquatable<MyType{n}> with
+        member this.Equals(other) = false
+
+type MyType = MyType{n}
+"""
+
+        let addNewTypeToFirst (sourceFile: SyntheticSourceFile) =
+            { sourceFile with Source = firstOriginalSource + (firstNewTypeDef (rng.Next(0, 9000))) }
+
+        let last = project1.SourceFiles[project1.SourceFiles.Length - 2].Id
+
+        let project2File = project2.SourceFiles[2].Id
+        let project2FileOriginalSource = project2.SourceFiles[2].Source
+
+        let project2FileNewTypeDef n = $"""
+type MyOtherType{n}() =
+    inherit MyType()
+    member this.MyMethod() = 1
+
+module MyModule =
+
+    let doSomething x =
+        x = MyOtherType{n}()
+"""
+
+        let addNewTypeToProject2File (sourceFile: SyntheticSourceFile) =
+            { sourceFile with Source = project2FileOriginalSource + (project2FileNewTypeDef (rng.Next(0, 9000))) }
+
+        let mutable ctx = benchmark.Yield()
+        ctx <- benchmark.UpdateFile(ctx, first, addNewTypeToFirst)
+        ctx <- benchmark.CheckFile(ctx, first, expectOk)
+
+        for _i in 1..iterations do
+            ctx <- benchmark.UpdateFile(ctx, project2File, addNewTypeToProject2File)
+            ctx <- benchmark.UpdateFile(ctx, project2File, break')
+            ctx <- benchmark.CheckFile(ctx, project2File, expectErrors)
+            ctx <- benchmark.UpdateFile(ctx, project2File, fix)
+            ctx <- benchmark.CheckFile(ctx, project2File, expectOk)
+
+        benchmark.Run(ctx) |> Async.RunSynchronously |> ignore
+
+
+[<MemoryDiagnoser>]
+[<ThreadingDiagnoser>]
+//#if !DEBUG
+//[<EtwProfiler>]
+//#endif
+[<SimpleJob(warmupCount=1,iterationCount=1)>]
+type SubsumptionCacheTestsWithPathologicalProject() =
+
+    let mutable benchmark : ProjectWorkflowBuilder = Unchecked.defaultof<_>
 
     let iterations = 1
 
@@ -482,8 +641,6 @@ type SubsumptionCacheTests() =
         let options = if this.UseSubsumptionCache then "--test:TypeSubsumptionCache"::project.OtherOptions else project.OtherOptions
         { project with OtherOptions = options; DependsOn = [this.Project1] }
 
-
-
     [<GlobalSetup>]
     member this.Setup() =
         benchmark <-
@@ -510,6 +667,8 @@ type SubsumptionCacheTests() =
         let firstOriginalSource = project1.SourceFiles[2].Source
 
         let firstNewTypeDef n = $"""
+open System
+
 type MyType{n}() =
     member val Field{n} = {n}
     interface IEquatable<MyType{n}> with
@@ -570,6 +729,8 @@ module MyModule =
         let firstOriginalSource = project1.SourceFiles[2].Source
 
         let firstNewTypeDef n = $"""
+open System
+
 type MyType{n}() =
     member val Field{n} = {n}
     interface IEquatable<MyType{n}> with
