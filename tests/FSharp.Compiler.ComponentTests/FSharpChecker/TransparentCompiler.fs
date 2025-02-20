@@ -638,10 +638,18 @@ let Fuzzing signatureFiles =
 
 let reposDir = __SOURCE_DIRECTORY__ ++ ".." ++ ".." ++ ".." ++ ".."
 let giraffeDir = reposDir ++ "Giraffe" ++ "src" ++ "Giraffe" |> Path.GetFullPath
+let giraffeResponseFile = giraffeDir ++ "Giraffe.rsp" |> Path.GetFullPath
 let giraffeTestsDir = reposDir ++ "Giraffe" ++ "tests" ++ "Giraffe.Tests" |> Path.GetFullPath
+let giraffeTestsResponseFile = giraffeTestsDir ++ "Giraffe.Tests.rsp" |> Path.GetFullPath
 let giraffeSignaturesDir = reposDir ++ "giraffe-signatures" ++ "src" ++ "Giraffe" |> Path.GetFullPath
+let giraffeSignaturesResponseFile = giraffeSignaturesDir ++ "Giraffe.rsp" |> Path.GetFullPath
 let giraffeSignaturesTestsDir = reposDir ++ "giraffe-signatures" ++ "tests" ++ "Giraffe.Tests" |> Path.GetFullPath
+let giraffeSignaturesTestsResponseFile = giraffeSignaturesTestsDir ++ "Giraffe.Tests.rsp" |> Path.GetFullPath
 
+let makeGiraffeProject() = mkSyntheticProjectForResponseFile (FileInfo giraffeResponseFile)
+let makeGiraffeTestsProject() = mkSyntheticProjectForResponseFile (FileInfo giraffeTestsResponseFile)
+let makeGiraffeSignaturesProject() = mkSyntheticProjectForResponseFile (FileInfo giraffeSignaturesResponseFile)
+let makeGiraffeSignaturesTestsProject() = mkSyntheticProjectForResponseFile (FileInfo giraffeSignaturesTestsResponseFile)
 
 type GiraffeTheoryAttribute() =
     inherit Xunit.TheoryAttribute()
@@ -651,44 +659,62 @@ type GiraffeTheoryAttribute() =
             if not (Directory.Exists giraffeSignaturesDir) then
                 do base.Skip <- $"Giraffe (with signatures) not found ({giraffeSignaturesDir}). You can get it here: https://github.com/nojaf/Giraffe/tree/signatures"
 
+
+
+[<GiraffeTheory>]
+[<InlineData false>]
+let ``In-memory multi-project editing`` signatureFiles =
+
+    let makeProject = if signatureFiles then makeGiraffeSignaturesProject else makeGiraffeProject
+    let giraffeProject = makeProject()
+
+    let makeTestsProject = if signatureFiles then makeGiraffeSignaturesTestsProject else makeGiraffeTestsProject
+    let testsProject = makeTestsProject()
+
+    let testsProject = { testsProject with DependsOn = [ giraffeProject ] }
+
+    testsProject.Workflow {
+        checkFile "Giraffe/Core" expectOk
+        checkFile "Giraffe.Tests/RoutingTests" expectOk
+        updateFile "Giraffe/Core" break'
+        checkFile "Giraffe/Core" expectErrors
+        checkFile "Giraffe.Tests/RoutingTests" expectErrors
+        updateFile "Giraffe/Core" modify
+        updateFile "Giraffe/Core" fix
+        checkFile "Giraffe/Core" expectOk
+        checkFile "Giraffe.Tests/RoutingTests" expectOk
+    }
+
+
 [<GiraffeTheory>]
 [<InlineData true>]
 [<InlineData false>]
 let GiraffeFuzzing signatureFiles =
     let seed = System.Random().Next()
 
-    let giraffeDir = if signatureFiles then giraffeSignaturesDir else giraffeDir
-    let giraffeTestsDir = if signatureFiles then giraffeSignaturesTestsDir else giraffeTestsDir
+    let makeProject = if signatureFiles then makeGiraffeSignaturesProject else makeGiraffeProject
+    let giraffeProject = makeProject()
 
-    let giraffeProject = SyntheticProject.CreateFromRealProject giraffeDir
-    let giraffeProject = { giraffeProject with OtherOptions = "--nowarn:FS3520"::giraffeProject.OtherOptions }
+    let makeTestsProject = if signatureFiles then makeGiraffeSignaturesTestsProject else makeGiraffeTestsProject
+    let testsProject = makeTestsProject()
 
-    let testsProject = SyntheticProject.CreateFromRealProject giraffeTestsDir
-    let testsProject =
-        { testsProject
-            with
-                OtherOptions = "--nowarn:FS3520"::testsProject.OtherOptions
-                DependsOn = [ giraffeProject ]
-                NugetReferences = giraffeProject.NugetReferences @ testsProject.NugetReferences
-                }
+    let testsProject = { testsProject with DependsOn = [ giraffeProject ] }
 
     fuzzingTest seed testsProject
-
 
 
 [<GiraffeTheory>]
 [<InlineData true>]
 [<InlineData false>]
 let ``File moving test`` signatureFiles =
-    let giraffeDir = if signatureFiles then giraffeSignaturesDir else giraffeDir
-    let giraffeProject = SyntheticProject.CreateFromRealProject giraffeDir
-    let giraffeProject = { giraffeProject with OtherOptions = "--nowarn:FS3520"::giraffeProject.OtherOptions }
+    let makeProject = if signatureFiles then makeGiraffeSignaturesProject else makeGiraffeProject
+    let giraffeProject = makeProject()
 
     giraffeProject.Workflow {
         // clearCache -- for better tracing
-        checkFile "Json" expectOk
-        moveFile "Json" 1 Down
-        checkFile "Json" expectOk
+        checkFile "Giraffe/Json" expectOk
+        moveFile "Giraffe/Json" 1 Down
+        checkFile "Giraffe/Json" expectOk
     }
 
 
@@ -696,12 +722,11 @@ let ``File moving test`` signatureFiles =
 [<InlineData true>]
 let ``What happens if bootstrapInfoStatic needs to be recomputed`` _ =
 
-    let giraffeProject = SyntheticProject.CreateFromRealProject giraffeSignaturesDir
-    let giraffeProject = { giraffeProject with OtherOptions = "--nowarn:FS3520"::giraffeProject.OtherOptions }
+    let giraffeProject = makeGiraffeSignaturesProject()
 
     giraffeProject.Workflow {
-        updateFile "Helpers" (fun f -> { f with SignatureFile = Custom (f.SignatureFile.CustomText + "\n") })
-        checkFile "EndpointRouting" expectOk
+        updateFile "Giraffe/Helpers" (fun f -> { f with SignatureFile = Custom (f.SignatureFile.CustomText + "\n") })
+        checkFile "Giraffe/EndpointRouting" expectOk
         withChecker (fun checker ->
             async {
                 checker.Caches.BootstrapInfoStatic.Clear()
@@ -710,8 +735,8 @@ let ``What happens if bootstrapInfoStatic needs to be recomputed`` _ =
                 ignore checker
                 return ()
             })
-        updateFile "Core" (fun f -> { f with SignatureFile = Custom (f.SignatureFile.CustomText + "\n") })
-        checkFile "EndpointRouting" expectOk
+        updateFile "Giraffe/Core" (fun f -> { f with SignatureFile = Custom (f.SignatureFile.CustomText + "\n") })
+        checkFile "Giraffe/EndpointRouting" expectOk
     }
 
 

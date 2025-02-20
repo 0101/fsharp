@@ -240,7 +240,8 @@ type SyntheticProject =
       FrameworkReferences: Reference list
       /// If set to true this project won't cause an exception if there are errors in the initial check
       SkipInitialCheck: bool
-      UseScriptResolutionRules: bool }
+      UseScriptResolutionRules: bool
+      MadeFromRealProject: bool }
 
     static member Create(?name: string) =
         let name = defaultArg name "TestProject"
@@ -257,7 +258,8 @@ type SyntheticProject =
           NugetReferences = []
           FrameworkReferences = []
           SkipInitialCheck = false
-          UseScriptResolutionRules = false }
+          UseScriptResolutionRules = false
+          MadeFromRealProject = false }
 
     static member Create([<ParamArray>] sourceFiles: SyntheticSourceFile[]) =
         { SyntheticProject.Create() with SourceFiles = sourceFiles |> List.ofArray }
@@ -483,6 +485,7 @@ let private writeFile (p: SyntheticProject) (f: SyntheticSourceFile) =
 
 /// Creates a SyntheticProject from the compiler arguments found in the response file.
 let mkSyntheticProjectForResponseFile (responseFile: FileInfo) : SyntheticProject =
+
     if not responseFile.Exists then
         failwith $"%s{responseFile.FullName} does not exist"
 
@@ -521,9 +524,10 @@ let mkSyntheticProjectForResponseFile (responseFile: FileInfo) : SyntheticProjec
                 let fileNameWithoutExtension = Path.GetFileNameWithoutExtension implPath
                 let directoryOfFile = FileInfo(implPath).DirectoryName
                 let relativeUri = Uri(responseFile.FullName).MakeRelativeUri(Uri(directoryOfFile))
-                let relativeFolderPath = Uri.UnescapeDataString(relativeUri.ToString()).Replace('/', Path.DirectorySeparatorChar)
-                Path.Combine(relativeFolderPath, fileNameWithoutExtension)
-
+                let mutable relativeFolderPath = Uri.UnescapeDataString(relativeUri.ToString())
+                while relativeFolderPath.StartsWith("../") do
+                    relativeFolderPath <- relativeFolderPath.[3..]
+                $"{relativeFolderPath}/{fileNameWithoutExtension}"
             {
                   Id = id
                   PublicVersion = 1
@@ -551,6 +555,7 @@ let mkSyntheticProjectForResponseFile (responseFile: FileInfo) : SyntheticProjec
         SourceFiles = sourceFiles
         OtherOptions = otherOptions
         AutoAddModules = false
+        MadeFromRealProject = true
     }
 
 [<AutoOpen>]
@@ -958,7 +963,7 @@ type ProjectWorkflowBuilder
     let useGetSource = not useTransparentCompiler && defaultArg useGetSource false
     let useChangeNotifications = not useTransparentCompiler && defaultArg useChangeNotifications false
     let autoStart = defaultArg autoStart true
-    let isExistingProject = defaultArg isExistingProject false
+    let isExistingProject = defaultArg isExistingProject initialProject.MadeFromRealProject
 
     let mutable latestProject = initialProject
     let mutable activity = None
@@ -1434,6 +1439,25 @@ type SyntheticProject with
             AutoAddModules = false
             NugetReferences = parseReferences "PackageReference"
             FrameworkReferences = parseReferences "FrameworkReference"
+            MadeFromRealProject = true
             OtherOptions =
                 [ for w in nowarns do
                       $"--nowarn:{w}" ] }
+
+
+[<AutoOpen>]
+module WorkflowHelpers =
+
+    let rng = System.Random()
+
+    let addComment s = $"{s}\n// {rng.NextDouble().ToString()}"
+    let prependSlash s = $"/{s}\n// {rng.NextDouble()}"
+
+    let modify (sourceFile: SyntheticSourceFile) =
+        { sourceFile with Source = addComment sourceFile.Source }
+
+    let break' (sourceFile: SyntheticSourceFile) =
+        { sourceFile with Source = prependSlash sourceFile.Source }
+
+    let fix (sourceFile: SyntheticSourceFile) =
+        { sourceFile with Source = sourceFile.Source.Substring 1 }
